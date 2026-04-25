@@ -207,6 +207,8 @@ export class Game {
       new THREE.Vector3(38, 0, 320),
       new THREE.Vector3(35, 0, 335),
       new THREE.Vector3(34, 0, 350),
+      new THREE.Vector3(34, 0, 390),
+      new THREE.Vector3(34, 0, 430),
     ];
     this.track = new RailTrack(trackPoints);
     SEGMENT_COUNT = this.track.sectionCount; // game sections for scoring

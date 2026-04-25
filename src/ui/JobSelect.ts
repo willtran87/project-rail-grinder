@@ -46,6 +46,8 @@ export const JOBS: JobDefinition[] = [
       new THREE.Vector3(3, 0, 245),
       new THREE.Vector3(1, 0, 275),
       new THREE.Vector3(0, 0, 300),
+      new THREE.Vector3(0, 0, 340),
+      new THREE.Vector3(0, 0, 380),
     ],
   },
   {
@@ -81,6 +83,8 @@ export const JOBS: JobDefinition[] = [
       new THREE.Vector3(30, 0, 318),
       new THREE.Vector3(30, 0, 340),
       new THREE.Vector3(32, 0, 360),
+      new THREE.Vector3(32, 0, 400),
+      new THREE.Vector3(32, 0, 440),
     ],
   },
   {
@@ -111,6 +115,8 @@ export const JOBS: JobDefinition[] = [
       new THREE.Vector3(24, 0, 255),
       new THREE.Vector3(26, 0, 280),
       new THREE.Vector3(24, 0, 300),
+      new THREE.Vector3(24, 0, 340),
+      new THREE.Vector3(24, 0, 380),
     ],
   },
   {
@@ -146,6 +152,8 @@ export const JOBS: JobDefinition[] = [
       new THREE.Vector3(40, 0, 382),
       new THREE.Vector3(38, 0, 405),
       new THREE.Vector3(35, 0, 425),
+      new THREE.Vector3(35, 0, 465),
+      new THREE.Vector3(35, 0, 505),
     ],
   },
 ];
