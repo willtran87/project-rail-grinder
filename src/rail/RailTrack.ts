@@ -52,17 +52,16 @@ export class RailTrack {
   /** Banking angle at each control point (radians). Positive = right rail higher. */
   private bankAngles: number[];
 
-  constructor(controlPoints: THREE.Vector3[], bankAngles?: number[]) {
+  constructor(controlPoints: THREE.Vector3[], bankAngles?: number[], maxSections?: number) {
     this.group = new THREE.Group();
 
-    // Create smooth spline through control points
-    // Tension 0.3 = smoother curves with less overshoot
     this.path = new THREE.CatmullRomCurve3(controlPoints, false, 'catmullrom', 0.3);
-    // High subdivision count for precise arc-length parameterization
     this.path.arcLengthDivisions = 1000;
     this.totalLength = this.path.getLength();
     this.segmentCount = Math.max(1, Math.floor(this.totalLength / VISUAL_SEGMENT_LENGTH));
-    this.sectionCount = Math.max(1, Math.floor(this.totalLength / GAME_SECTION_LENGTH));
+    // If maxSections specified, cap the game section count (extra track is just run-out)
+    const computedSections = Math.max(1, Math.floor(this.totalLength / GAME_SECTION_LENGTH));
+    this.sectionCount = maxSections ? Math.min(computedSections, maxSections) : computedSections;
 
     // Default banking: compute from curvature
     this.bankAngles = bankAngles ?? this.computeBankAngles(controlPoints.length);

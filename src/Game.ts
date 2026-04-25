@@ -1209,7 +1209,7 @@ export class Game {
     }
 
     // Build new track from job definition
-    this.track = new RailTrack(job.trackPoints);
+    this.track = new RailTrack(job.trackPoints, undefined, job.sections);
     SEGMENT_COUNT = this.track.sectionCount;
     TRACK_LENGTH = this.track.totalLength;
     this.engine.scene.add(this.track.group);
