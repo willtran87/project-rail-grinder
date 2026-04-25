@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Staying on Track - Rail Grinding Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --ui-bg: rgba(10, 12, 18, 0.85);
+        --ui-border: rgba(255, 255, 255, 0.08);
+        --ui-accent: #e8a020;
+        --ui-green: #4caf50;
+        --ui-red: #ef5350;
+        --ui-text: #ccc;
+        --ui-dim: #666;
+        --ui-font: 'Inter', -apple-system, sans-serif;
+        --ui-mono: 'JetBrains Mono', monospace;
+      }
+      html, body {
+        width: 100%; height: 100%;
+        overflow: hidden; background: #000;
+        font-family: var(--ui-font);
+        color: #fff;
+      }
+      #game-canvas {
+        display: block; width: 100%; height: 100%;
+      }
+
+      /* Vignette */
+      #vignette {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none; z-index: 1;
+        background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.4) 100%);
+      }
+
+      /* ---- TOP BAR: Speed + Status (compact) ---- */
+      #top-bar {
+        position: absolute; top: 0; left: 0; right: 0;
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 8px 16px;
+        pointer-events: none; z-index: 5;
+      }
+      .pill {
+        background: var(--ui-bg); border: 1px solid var(--ui-border);
+        border-radius: 20px; padding: 4px 14px;
+        font-family: var(--ui-mono); font-size: 11px; color: var(--ui-text);
+        display: flex; align-items: center; gap: 6px;
+      }
+      .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+      .pill .dot.green { background: var(--ui-green); }
+      .pill .dot.orange { background: var(--ui-accent); }
+      .pill .dot.red { background: var(--ui-red); }
+      .pill .speed { font-size: 16px; font-weight: 700; color: #fff; }
+      .pill .unit { font-size: 9px; color: var(--ui-dim); }
+      #progress-pill { font-size: 11px; }
+      #progress-pill .sections { color: #fff; font-weight: 600; }
+      #progress-pill .accuracy { font-weight: 600; margin-left: 8px; }
+
+      /* ---- Tutorial ---- */
+      #tutorial-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none; z-index: 10;
+      }
+      .tutorial-box {
+        position: absolute; background: var(--ui-bg);
+        border: 1px solid var(--ui-accent); border-radius: 8px;
+        padding: 16px 20px; font-size: 12px; line-height: 1.8;
+        color: #fff; max-width: 400px; pointer-events: auto; z-index: 11;
+      }
+      .tutorial-box .tutorial-title { color: var(--ui-accent); font-weight: 700; font-size: 13px; display: block; margin-bottom: 6px; }
+      .tutorial-box .tutorial-text { color: var(--ui-text); display: block; margin-bottom: 8px; }
+      .tutorial-box .tutorial-hint { color: var(--ui-green); font-size: 10px; }
+      .tutorial-btn {
+        background: var(--ui-accent); color: #000; border: none;
+        font-family: var(--ui-font); font-size: 11px; font-weight: 600;
+        padding: 8px 20px; border-radius: 4px; cursor: pointer; margin-top: 6px;
+      }
+      .tutorial-btn:hover { filter: brightness(1.15); }
+
+      /* ---- Profile SETUP mode (enlarged, centered) ---- */
+      #profile-container.setup-mode {
+        position: absolute;
+        bottom: auto; right: auto;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 8;
+      }
+      #profile-container.setup-mode canvas {
+        width: 450px; height: 240px;
+      }
+      #setup-prompt {
+        position: absolute;
+        bottom: 140px; left: 50%; transform: translateX(-50%);
+        font-family: var(--ui-font); font-size: 13px;
+        color: var(--ui-accent); text-align: center;
+        pointer-events: none; z-index: 8; display: none;
+      }
+      #setup-prompt kbd {
+        display: inline-block; background: rgba(255,255,255,0.08);
+        border: 1px solid var(--ui-accent); border-radius: 4px;
+        padding: 2px 10px; font-family: var(--ui-mono); font-size: 14px;
+        color: var(--ui-accent);
+      }
+      #setup-prompt .sub {
+        font-size: 10px; color: var(--ui-dim); margin-top: 6px;
+      }
+
+      /* ---- Tooltip ---- */
+      #tooltip {
+        position: absolute; background: var(--ui-bg); border: 1px solid var(--ui-border);
+        border-radius: 4px; padding: 6px 10px; font-size: 10px; color: var(--ui-text);
+        max-width: 240px; pointer-events: none; z-index: 20; display: none;
+      }
+
+      /* ---- Controls hint ---- */
+      #controls-bar {
+        position: absolute; bottom: 60px; left: 16px;
+        font-size: 9px; color: rgba(255,255,255,0.25); line-height: 2;
+        pointer-events: none; z-index: 5;
+      }
+      #controls-bar kbd {
+        display: inline-block; background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.1); border-radius: 3px;
+        padding: 1px 5px; font-family: var(--ui-mono); font-size: 9px;
+        color: rgba(255,255,255,0.4); margin: 0 1px;
+      }
+
+      /* ---- Results screen ---- */
+      #results-screen {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.9); display: none; justify-content: center;
+        align-items: center; z-index: 30;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Title screen with procedural train art -->
+    <div id="title-screen" style="
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: #060810;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      z-index: 50; cursor: pointer; font-family: 'Inter', sans-serif;
+      overflow: hidden;
+    ">
+      <canvas id="title-art" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></canvas>
+      <div style="position: relative; z-index: 1; text-align: center;">
+        <div style="font-size: 14px; color: rgba(255,170,0,0.7); letter-spacing: 8px; font-weight: 500; margin-bottom: 8px;">STAYING ON</div>
+        <div style="font-size: 48px; color: #fff; font-weight: 700; letter-spacing: 4px; margin-bottom: 12px; text-shadow: 0 0 40px rgba(255,170,0,0.3);">TRACK</div>
+        <div style="font-size: 11px; color: #666; letter-spacing: 3px; margin-bottom: 4px;">RAIL GRINDING SIMULATOR</div>
+        <div style="font-size: 9px; color: #444; letter-spacing: 2px; margin-bottom: 50px;">RAIL MAINTENANCE SIMULATOR</div>
+        <div style="font-size: 12px; color: rgba(255,170,0,0.8); animation: blink 2s ease-in-out infinite;">CLICK TO START</div>
+        <div style="font-size: 9px; color: #333; margin-top: 40px; line-height: 2.5; font-family: 'JetBrains Mono', monospace;">
+          W/S drive &nbsp; SPACE grind &nbsp; Q/E angle &nbsp; A/D pressure
+        </div>
+      </div>
+      <script>
+        // Atmospheric close-up of grinder at night with dramatic spark shower
+        (function() {
+          const c = document.getElementById('title-art');
+          c.width = window.innerWidth; c.height = window.innerHeight;
+          const x = c.getContext('2d'), w = c.width, h = c.height;
+          // Spark particles
+          const sp = []; for (let i = 0; i < 250; i++) sp.push({x:0,y:0,vx:0,vy:0,l:1,m:1});
+          // Ember particles (slow floating)
+          const em = []; for (let i = 0; i < 40; i++) em.push({x: Math.random()*w, y: h*0.4+Math.random()*h*0.4, vx:(Math.random()-0.5)*0.3, vy:-0.2-Math.random()*0.5, a:Math.random()});
+
+          const originX = w * 0.5, originY = h * 0.72;
+
+          function draw() {
+            // Deep dark sky
+            const sk = x.createLinearGradient(0, 0, 0, h);
+            sk.addColorStop(0, '#040412'); sk.addColorStop(0.4, '#0a0820');
+            sk.addColorStop(0.7, '#08061a'); sk.addColorStop(1, '#06040e');
+            x.fillStyle = sk; x.fillRect(0, 0, w, h);
+
+            // Stars
+            for (let i = 0; i < 60; i++) {
+              x.globalAlpha = 0.1 + Math.sin(Date.now()*0.0007+i*2.7)*0.15;
+              x.fillStyle = '#aab';
+              x.beginPath(); x.arc((i*157+41)%w, (i*89+13)%(h*0.5), i%8===0?1.2:0.6, 0, Math.PI*2); x.fill();
+            }
+            x.globalAlpha = 1;
+
+            // Warm glow on the ground — the main light source
+            const glow = x.createRadialGradient(originX, originY, 0, originX, originY, h*0.5);
+            glow.addColorStop(0, 'rgba(255,150,40,0.25)');
+            glow.addColorStop(0.3, 'rgba(255,100,20,0.08)');
+            glow.addColorStop(0.7, 'rgba(200,60,10,0.02)');
+            glow.addColorStop(1, 'rgba(0,0,0,0)');
+            x.fillStyle = glow; x.fillRect(0, 0, w, h);
+
+            // Horizon glow (warm band)
+            const hz = x.createLinearGradient(0, originY-80, 0, originY+40);
+            hz.addColorStop(0, 'rgba(255,120,40,0)');
+            hz.addColorStop(0.5, 'rgba(255,100,30,0.06)');
+            hz.addColorStop(1, 'rgba(255,80,20,0)');
+            x.fillStyle = hz; x.fillRect(0, originY-80, w, 120);
+
+            // Two thin rail lines catching the warm light
+            x.strokeStyle = 'rgba(255,180,80,0.15)';
+            x.lineWidth = 1.5;
+            x.beginPath(); x.moveTo(0, originY); x.lineTo(w, originY); x.stroke();
+            x.beginPath(); x.moveTo(0, originY+4); x.lineTo(w, originY+4); x.stroke();
+
+            // Brighter rail highlight near center
+            const rg = x.createLinearGradient(originX-150, 0, originX+150, 0);
+            rg.addColorStop(0, 'rgba(255,180,80,0)');
+            rg.addColorStop(0.5, 'rgba(255,200,100,0.3)');
+            rg.addColorStop(1, 'rgba(255,180,80,0)');
+            x.fillStyle = rg; x.fillRect(originX-150, originY-2, 300, 8);
+
+            // Bright contact point
+            x.fillStyle = '#fff8e0';
+            x.beginPath(); x.arc(originX, originY+2, 3, 0, Math.PI*2); x.fill();
+            const cp = x.createRadialGradient(originX, originY+2, 0, originX, originY+2, 20);
+            cp.addColorStop(0, 'rgba(255,240,200,0.8)');
+            cp.addColorStop(0.5, 'rgba(255,200,100,0.2)');
+            cp.addColorStop(1, 'rgba(255,150,50,0)');
+            x.fillStyle = cp; x.beginPath(); x.arc(originX, originY+2, 20, 0, Math.PI*2); x.fill();
+
+            // Animated sparks — fountain pattern
+            for (const s of sp) {
+              s.l += 0.014; s.x += s.vx; s.y += s.vy; s.vy += 0.06;
+              if (s.l >= s.m || s.y > h+10 || s.x < -10 || s.x > w+10) {
+                s.x = originX + (Math.random()-0.5)*8;
+                s.y = originY;
+                const a = -Math.PI*0.15 + Math.random()*Math.PI*1.3; // wide upward fan
+                const v = 2 + Math.random()*6;
+                s.vx = Math.cos(a)*v*(Math.random()>0.5?1:-1);
+                s.vy = -Math.abs(Math.sin(a)*v) - 1;
+                s.l = 0; s.m = 0.2+Math.random()*0.7;
+              }
+              const t = s.l/s.m;
+              const sz = (1-t)*2.5+0.5;
+              if (t<0.08) x.fillStyle = `rgba(255,255,230,${1-t})`;
+              else if (t<0.3) x.fillStyle = `rgba(255,${200-t*400|0},${60-t*80|0},${(1-t)*0.95})`;
+              else x.fillStyle = `rgba(${255-t*150|0},${60-t*50|0},5,${(1-t)*0.6})`;
+              x.fillRect(s.x, s.y, sz, sz);
+            }
+
+            // Floating embers (slow, drifting upward)
+            for (const e of em) {
+              e.x += e.vx; e.y += e.vy; e.a += 0.01;
+              if (e.y < h*0.1 || e.x < 0 || e.x > w) {
+                e.x = originX + (Math.random()-0.5)*w*0.4;
+                e.y = originY - Math.random()*h*0.1;
+                e.vx = (Math.random()-0.5)*0.4;
+                e.vy = -0.15 - Math.random()*0.4;
+              }
+              const ea = 0.1 + Math.sin(e.a*3)*0.1;
+              x.fillStyle = `rgba(255,${120+Math.random()*40|0},30,${ea})`;
+              x.fillRect(e.x, e.y, 1.5, 1.5);
+            }
+
+            // Ground bounce sparks
+            for (let i = 0; i < 8; i++) {
+              const bx = originX + Math.sin(Date.now()*0.002+i*1.3)*80+(i-4)*20;
+              x.fillStyle = `rgba(255,${100+Math.random()*60|0},20,${0.15+Math.random()*0.2})`;
+              x.fillRect(bx, originY+4+Math.random()*8, 1.5, 1.5);
+            }
+
+            // Subtle vignette
+            const vig = x.createRadialGradient(w/2, h*0.45, h*0.2, w/2, h*0.45, h*0.8);
+            vig.addColorStop(0, 'rgba(0,0,0,0)');
+            vig.addColorStop(1, 'rgba(0,0,0,0.5)');
+            x.fillStyle = vig; x.fillRect(0, 0, w, h);
+
+            requestAnimationFrame(draw);
+          }
+          draw();
+        })();
+      </script>
+      <style>
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      </style>
+    </div>
+
+    <!-- Game -->
+    <canvas id="game-canvas"></canvas>
+    <div id="vignette"></div>
+
+    <!-- Top bar: compact speed+status left, progress right -->
+    <div id="top-bar">
+      <div class="pill">
+        <div class="dot" id="grind-dot"></div>
+        <span class="speed" id="speed-display">0.0</span><span class="unit">MPH</span>
+        <span id="grind-status" style="color: var(--ui-dim);">DRIVING</span>
+      </div>
+      <div class="pill" id="progress-pill">
+        <span class="sections" id="segments-display">0/0</span>
+        <span class="accuracy" id="accuracy-display">-</span>
+      </div>
+    </div>
+
+    <!-- Hidden compat elements -->
+    <div id="obj-title" style="display:none"></div>
+    <div id="obj-desc" style="display:none"></div>
+    <div id="earnings-display" style="display:none"></div>
+    <div id="time-display" style="display:none"></div>
+    <div id="camera-display" style="display:none"></div>
+
+    <!-- Unified grind workstation: profiles + controls in one panel -->
+    <div id="profile-container" style="
+      position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 0; align-items: stretch;
+      pointer-events: none; z-index: 5;
+    ">
+      <!-- Left rail -->
+      <div style="text-align: center;">
+        <div id="left-rail-label" style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); letter-spacing: 1px; margin-bottom: 1px;">LEFT RAIL</div>
+        <canvas id="profile-left" width="360" height="190" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 6px 0 0 0;"></canvas>
+        <div style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-top: none; border-radius: 0 0 0 6px; padding: 3px 10px; display: flex; gap: 10px; justify-content: center; font-family: var(--ui-mono); font-size: 10px;">
+          <span style="color: var(--ui-dim); font-size: 7px;">ANG</span><span id="angle-value" style="color: #fff; font-weight: 700;">0&deg;</span>
+          <span style="color: var(--ui-dim); font-size: 7px;">PSI</span><span id="pressure-value" style="color: #fff; font-weight: 700;">50%</span>
+        </div>
+      </div>
+      <!-- Center: heat -->
+      <div style="background: var(--ui-bg); border-top: 1px solid var(--ui-border); border-bottom: 1px solid var(--ui-border); padding: 4px 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 32px;">
+        <div style="font-family: var(--ui-mono); font-size: 6px; color: var(--ui-dim); letter-spacing: 1px;">HEAT</div>
+        <div style="width: 6px; height: 70px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative; overflow: hidden;">
+          <div id="heat-fill" style="position: absolute; bottom: 0; width: 100%; height: 0%; background: var(--ui-green); border-radius: 3px; transition: height 0.1s;"></div>
+        </div>
+        <div id="heat-value" style="font-family: var(--ui-mono); font-size: 8px; color: var(--ui-dim);">0%</div>
+      </div>
+      <!-- Right rail -->
+      <div style="text-align: center;">
+        <div id="right-rail-label" style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); letter-spacing: 1px; margin-bottom: 1px;">RIGHT RAIL</div>
+        <canvas id="profile-right" width="360" height="190" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 0 6px 0 0;"></canvas>
+        <div style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-top: none; border-radius: 0 0 6px 0; padding: 3px 10px; display: flex; gap: 10px; justify-content: center; font-family: var(--ui-mono); font-size: 10px;">
+          <span style="color: var(--ui-dim); font-size: 7px;">ANG</span><span id="angle-value-r" style="color: #fff; font-weight: 700;">0&deg;</span>
+          <span style="color: var(--ui-dim); font-size: 7px;">PSI</span><span id="pressure-value-r" style="color: #fff; font-weight: 700;">50%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden compat elements -->
+    <div id="angle-fill" style="display:none"></div>
+    <div id="pressure-fill" style="display:none"></div>
+    <div id="setup-prompt" style="display:none"></div>
+    <div id="controls-bar" style="display:none"></div>
+
+    <!-- Deadline countdown -->
+    <div id="deadline-bar" style="
+      position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+      background: var(--ui-bg); border: 1px solid rgba(255,100,0,0.3);
+      border-radius: 20px; padding: 4px 16px;
+      font-family: var(--ui-mono); font-size: 11px; color: var(--ui-accent);
+      display: none; align-items: center; gap: 8px;
+      pointer-events: none; z-index: 5;
+    ">
+      <span style="font-size: 8px; color: var(--ui-dim);">TRAIN IN</span>
+      <span id="deadline-time" style="font-size: 16px; font-weight: 700; color: var(--ui-accent);">0:00</span>
+    </div>
+
+    <!-- Overlays -->
+    <div id="tutorial-overlay"></div>
+    <div id="tooltip"></div>
+    <div id="results-screen"><div id="results-content"></div></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
