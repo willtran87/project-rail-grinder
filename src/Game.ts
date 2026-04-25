@@ -207,8 +207,10 @@ export class Game {
       new THREE.Vector3(38, 0, 320),
       new THREE.Vector3(35, 0, 335),
       new THREE.Vector3(34, 0, 350),
-      new THREE.Vector3(34, 0, 390),
-      new THREE.Vector3(34, 0, 430),
+      new THREE.Vector3(34, 0, 400),
+      new THREE.Vector3(34, 0, 450),
+      new THREE.Vector3(34, 0, 500),
+      new THREE.Vector3(34, 0, 550),
     ];
     this.track = new RailTrack(trackPoints);
     SEGMENT_COUNT = this.track.sectionCount; // game sections for scoring
@@ -606,7 +608,17 @@ export class Game {
     }
 
     this.grinderPosition += this.grinderSpeed * dt;
-    this.grinderPosition = Math.max(0, Math.min(TRACK_LENGTH - 5, this.grinderPosition));
+    // Clamp so entire consist stays on track (crew car at offset +67 is the longest)
+    const maxPos = TRACK_LENGTH - 75;
+    const minPos = 0;
+    this.grinderPosition = Math.max(minPos, Math.min(maxPos, this.grinderPosition));
+
+    // Gradual slowdown near track ends (brake feel, not abrupt wall)
+    const endProximity = Math.min(this.grinderPosition - minPos, maxPos - this.grinderPosition);
+    if (endProximity < 20) {
+      const brakeFactor = endProximity / 20;
+      this.grinderSpeed *= brakeFactor;
+    }
 
     // Position each car using front/rear bogie (wheel truck) positions.
     // Real train cars sit on two bogies. The car body spans between them
@@ -1111,7 +1123,7 @@ export class Game {
     // Auto-drive forward at moderate speed
     this.grinderSpeed = 6;
     this.grinderPosition += this.grinderSpeed * dt;
-    this.grinderPosition = Math.min(TRACK_LENGTH - 5, this.grinderPosition);
+    this.grinderPosition = Math.min(TRACK_LENGTH - 75, this.grinderPosition);
 
     // Cinematic low-angle side camera tracking the gleaming rails
     const cam = this.engine.camera;
@@ -1140,7 +1152,7 @@ export class Game {
     }
 
     // End when we've traversed most of the track
-    if (this.grinderPosition > TRACK_LENGTH - 10) {
+    if (this.grinderPosition > TRACK_LENGTH - 80) {
       this.inspectionPass = false;
       setTimeout(() => this.showCompletionReport(), 1000);
     }
