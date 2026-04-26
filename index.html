@@ -135,7 +135,7 @@
         align-items: center; z-index: 30;
       }
     </style>
-    <script type="module" crossorigin src="/project-rail-grinder/assets/index-Dz_0Ci6R.js"></script>
+    <script type="module" crossorigin src="/project-rail-grinder/assets/index-BCq8ZSci.js"></script>
   </head>
   <body>
     <!-- Title screen with procedural train art -->
@@ -354,6 +354,36 @@
     ">
       <span style="font-size: 8px; color: var(--ui-dim);">TRAIN IN</span>
       <span id="deadline-time" style="font-size: 16px; font-weight: 700; color: var(--ui-accent);">0:00</span>
+    </div>
+
+    <!-- Pause menu -->
+    <div id="pause-menu" style="
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      display: none; justify-content: center; align-items: center;
+      z-index: 35; pointer-events: auto;
+    ">
+      <div style="text-align: center; font-family: var(--ui-font);">
+        <div style="font-size: 24px; font-weight: 700; color: #fff; margin-bottom: 8px;">PAUSED</div>
+        <div style="font-size: 11px; color: var(--ui-dim); margin-bottom: 30px;">Press ESC to resume</div>
+        <div style="display: flex; flex-direction: column; gap: 10px; align-items: center;">
+          <button id="pause-resume" style="
+            background: var(--ui-accent); color: #000; border: none;
+            font-family: var(--ui-font); font-size: 13px; font-weight: 600;
+            padding: 10px 40px; border-radius: 4px; cursor: pointer; width: 200px;
+          ">RESUME</button>
+          <button id="pause-restart" style="
+            background: rgba(255,255,255,0.08); color: var(--ui-text); border: 1px solid var(--ui-border);
+            font-family: var(--ui-font); font-size: 12px; font-weight: 500;
+            padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
+          ">RESTART JOB</button>
+          <button id="pause-quit" style="
+            background: rgba(255,255,255,0.08); color: var(--ui-text); border: 1px solid var(--ui-border);
+            font-family: var(--ui-font); font-size: 12px; font-weight: 500;
+            padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
+          ">QUIT TO MENU</button>
+        </div>
+      </div>
     </div>
 
     <!-- Overlays -->
