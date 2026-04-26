@@ -64,7 +64,7 @@ export class Game {
   private targetProfile: TargetProfile;
 
   // Grinder state
-  private grinderPosition: number = 10;
+  private grinderPosition: number = 50;
   private grinderSpeed: number = 0;
   private isGrinding: boolean = false;
 
@@ -132,6 +132,10 @@ export class Game {
   private inspectionPass: boolean = false;
   private inspectionTimer: number = 0;
 
+  // Pause menu
+  private isPaused: boolean = false;
+  private pauseMenu!: HTMLElement;
+
   // Pre-allocated temp objects to avoid per-frame garbage (reused in update loops)
   private _tmpVec = new THREE.Vector3();
   private _tmpVec2 = new THREE.Vector3();
@@ -175,6 +179,18 @@ export class Game {
     this.deadlineTime = document.getElementById('deadline-time')!;
     this.angleValueR = document.getElementById('angle-value-r')!;
     this.pressureValueR = document.getElementById('pressure-value-r')!;
+
+    // Pause menu
+    this.pauseMenu = document.getElementById('pause-menu')!;
+    document.getElementById('pause-resume')!.addEventListener('click', () => this.togglePause());
+    document.getElementById('pause-restart')!.addEventListener('click', () => {
+      this.togglePause();
+      if (this.currentJob) this.rebuildForJob(this.currentJob);
+    });
+    document.getElementById('pause-quit')!.addEventListener('click', () => {
+      this.togglePause();
+      this.startJobSelect();
+    });
 
     this.targetProfile = {
       name: 'AREMA 136RE Standard',
@@ -459,9 +475,26 @@ export class Game {
 
   // ---- MAIN UPDATE LOOP ----
 
+  private togglePause(): void {
+    if (!this.gameStarted || this.jobComplete || this.inspectionPass) return;
+    this.isPaused = !this.isPaused;
+    this.pauseMenu.style.display = this.isPaused ? 'flex' : 'none';
+  }
+
   private update(dt: number): void {
     if (this.input.wasKeyPressed('r')) {
       window.location.reload();
+    }
+
+    // ESC toggles pause during gameplay
+    if (this.input.wasKeyPressed('escape') && this.gameStarted && !this.jobComplete && !this.inspectionPass) {
+      this.togglePause();
+    }
+
+    // While paused, render the frozen scene but skip all game logic
+    if (this.isPaused) {
+      this.input.endFrame();
+      return;
     }
 
     if (this.inspectionPass) {
@@ -1116,7 +1149,7 @@ export class Game {
     this.inspectionTimer = 0;
     this.grinderSpeed = 0;
     // Move grinder to start of track
-    this.grinderPosition = 10;
+    this.grinderPosition = 50;
     // Show notification
     this.floatingScore.show('INSPECTION PASS', '#44ff44');
     if (this.audioReady) this.audio.playSegmentComplete();
@@ -1197,6 +1230,8 @@ export class Game {
     this.jobComplete = false;
     this.guidedTutorial.setReplay();
     this.isFirstJob = false;
+    this.isPaused = false;
+    this.pauseMenu.style.display = 'none';
     this.jobSelect.show().then((job) => {
       this.currentJob = job;
       this.rebuildForJob(job);
@@ -1233,7 +1268,7 @@ export class Game {
     this.totalMetalRemoved = 0;
     this.trackRestoredFt = 0;
     this.grindCount = 0;
-    this.grinderPosition = 10;
+    this.grinderPosition = 50;
     this.grinderSpeed = 0;
     this.lastSectionIndex = -1;
     this.consecutiveCompleted = 0;
