@@ -42,7 +42,7 @@ export class InputManager {
     this.boundHandlers = {
       keydown: (e: KeyboardEvent) => {
         const key = e.key.toLowerCase();
-        // Prevent TAB from changing focus
+        // Prevent TAB from shifting browser focus away from the game
         if (key === 'tab') e.preventDefault();
         if (!this.keysDown.has(key)) {
           this.keysPressed.add(key);

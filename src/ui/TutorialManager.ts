@@ -70,7 +70,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
   {
     title: 'TRACK MAP',
     text: 'The strip at the top shows the full track. RED segments have severe defects, YELLOW have moderate. As you grind, they turn GREEN when complete. Your goal: turn them all green!',
-    hint: 'Each completed segment earns you money. Streaks give bonuses!',
+    hint: 'Each completed segment restores track. Streaks give bonuses!',
     position: 'top-left',
   },
   {

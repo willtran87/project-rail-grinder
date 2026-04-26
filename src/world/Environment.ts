@@ -13,9 +13,14 @@ export class Environment {
   readonly group: THREE.Group;
   private track: RailTrack | null = null;
 
+  /** Pre-computed occupancy grid — avoids 101 spline samples per isOnTrack() call */
+  private occupancyGrid: Set<string> | null = null;
+  private static readonly GRID_CELL = 2; // meters per cell
+
   constructor(track?: RailTrack) {
     this.group = new THREE.Group();
     this.track = track ?? null;
+    this.buildOccupancyGrid();
     this.addTerrain();
     this.addTracksideGroundCover();
     this.addInstancedTrees();
@@ -35,19 +40,40 @@ export class Environment {
     return 35;
   }
 
+  /** Build a grid of cells occupied by the track for O(1) collision checks */
+  private buildOccupancyGrid(): void {
+    if (!this.track) return;
+    const grid = new Set<string>();
+    const cell = Environment.GRID_CELL;
+    const len = this.track.totalLength;
+    // Sample every 2m along the track (denser than the old 101 samples)
+    for (let d = 0; d < len; d += 2) {
+      const tp = this.track.getTrackPoint(d);
+      // Mark cells for main track (5m clearance → 3 cells radius)
+      const cx = Math.floor(tp.position.x / cell);
+      const cz = Math.floor(tp.position.z / cell);
+      for (let dx = -3; dx <= 3; dx++) {
+        for (let dz = -3; dz <= 3; dz++) {
+          grid.add(`${cx + dx},${cz + dz}`);
+        }
+      }
+      // Mark cells for adjacent track (5m offset, 4m clearance → 2 cells radius)
+      const ax = Math.floor((tp.position.x + tp.right.x * 5) / cell);
+      const az = Math.floor((tp.position.z + tp.right.z * 5) / cell);
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          grid.add(`${ax + dx},${az + dz}`);
+        }
+      }
+    }
+    this.occupancyGrid = grid;
+  }
+
   private isOnTrack(x: number, z: number): boolean {
     if (!this.track) return Math.abs(x - this.trackCenterX(z)) < 8;
-    const len = this.track.totalLength;
-    for (let i = 0; i <= 100; i++) {
-      const tp = this.track.getTrackPoint((i / 100) * len);
-      const dx = x - tp.position.x, dz = z - tp.position.z;
-      // Check main track (5m clearance)
-      if (dx * dx + dz * dz < 25) return true;
-      // Check adjacent track (5m offset to the right, 4m clearance)
-      const ax = tp.position.x + tp.right.x * 5;
-      const az = tp.position.z + tp.right.z * 5;
-      const adx = x - ax, adz = z - az;
-      if (adx * adx + adz * adz < 16) return true;
+    if (this.occupancyGrid) {
+      const cell = Environment.GRID_CELL;
+      return this.occupancyGrid.has(`${Math.floor(x / cell)},${Math.floor(z / cell)}`);
     }
     return false;
   }

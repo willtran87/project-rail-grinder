@@ -14,8 +14,7 @@ export type TutorialPhase =
   | 'first_complete'   // first section done! brief celebration
   | 'prompt_angle'     // "Press Q/E to aim at red zones"
   | 'adjusting'        // player is adjusting angle
-  | 'prompt_pressure'  // "Press A/D to adjust pressure"
-  | 'prompt_tab'       // "Press TAB to switch rails"
+  | 'prompt_pressure'  // "Press A/D or J/L to adjust pressure"
   | 'free_play'        // tutorial complete, player is on their own
   ;
 
@@ -76,7 +75,6 @@ export class GuidedTutorial {
     speed: number;
     angleChanged: boolean;
     pressureChanged: boolean;
-    tabPressed: boolean;
     sectionsCompleted: number;
   }): { autoMove?: boolean; skipReport?: boolean } {
 
@@ -115,7 +113,7 @@ export class GuidedTutorial {
       case 'first_complete':
         if (this.phaseTimer > 2.0) {
           this.showPrompt(`
-            Use <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">Q</kbd> and <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">E</kbd> to aim at the <span style="color:#ff5500;">orange</span> zones on the profile
+            Left rail: <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">Q</kbd>/<kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">E</kbd> &nbsp; Right rail: <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">U</kbd>/<kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">O</kbd> &nbsp; Aim at the <span style="color:#ff5500;">orange</span> zones
           `);
           this.phase = 'prompt_angle';
           this.phaseTimer = 0;
@@ -125,7 +123,7 @@ export class GuidedTutorial {
       case 'prompt_angle':
         if (state.angleChanged) {
           this.showPrompt(`
-            <span style="color:var(--ui-green);">Good!</span> Now try <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">A</kbd> / <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">D</kbd> to adjust grinding pressure
+            <span style="color:var(--ui-green);">Good!</span> Pressure: <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">A</kbd>/<kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">D</kbd> left &nbsp; <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">J</kbd>/<kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">L</kbd> right
           `);
           this.phase = 'prompt_pressure';
           this.phaseTimer = 0;
@@ -135,16 +133,6 @@ export class GuidedTutorial {
 
       case 'prompt_pressure':
         if (state.pressureChanged || this.phaseTimer > 10) {
-          this.showPrompt(`
-            Press <kbd style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:4px;font-family:var(--ui-mono);color:var(--ui-accent);">TAB</kbd> to switch between left and right rail
-          `);
-          this.phase = 'prompt_tab';
-          this.phaseTimer = 0;
-        }
-        return {};
-
-      case 'prompt_tab':
-        if (state.tabPressed || this.phaseTimer > 12) {
           this.showPrompt(`
             <span style="color:var(--ui-green);">You're ready!</span> Grind all sections to lift the slow orders.
             <div style="font-size:11px;color:var(--ui-dim);margin-top:4px;">SHIFT+W = fast travel &nbsp; 1-5 = cameras &nbsp; N = time &nbsp; P = rain</div>

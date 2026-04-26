@@ -48,11 +48,13 @@ export class RailTrack {
   readonly segmentCount: number;
   /** Number of game sections (longer, for scoring/defects) */
   readonly sectionCount: number;
+  /** Distance along track where game sections begin (lead-in before first section) */
+  readonly sectionOffset: number;
 
   /** Banking angle at each control point (radians). Positive = right rail higher. */
   private bankAngles: number[];
 
-  constructor(controlPoints: THREE.Vector3[], bankAngles?: number[], maxSections?: number) {
+  constructor(controlPoints: THREE.Vector3[], bankAngles?: number[], maxSections?: number, sectionOffset: number = 0) {
     this.group = new THREE.Group();
 
     this.path = new THREE.CatmullRomCurve3(controlPoints, false, 'catmullrom', 0.3);
@@ -62,6 +64,7 @@ export class RailTrack {
     // If maxSections specified, cap the game section count (extra track is just run-out)
     const computedSections = Math.max(1, Math.floor(this.totalLength / GAME_SECTION_LENGTH));
     this.sectionCount = maxSections ? Math.min(computedSections, maxSections) : computedSections;
+    this.sectionOffset = sectionOffset;
 
     // Default banking: compute from curvature
     this.bankAngles = bankAngles ?? this.computeBankAngles(controlPoints.length);
@@ -103,13 +106,13 @@ export class RailTrack {
   /** Get the game section index (for scoring/defects) for a distance */
   getSectionIndex(distance: number): number {
     return Math.max(0, Math.min(this.sectionCount - 1,
-      Math.floor(distance / GAME_SECTION_LENGTH)));
+      Math.floor((distance - this.sectionOffset) / GAME_SECTION_LENGTH)));
   }
 
   /** Get all visual segment indices that belong to a game section */
   getSegmentsForSection(sectionIndex: number): number[] {
     const ratio = Math.round(GAME_SECTION_LENGTH / VISUAL_SEGMENT_LENGTH);
-    const start = sectionIndex * ratio;
+    const start = Math.round(this.sectionOffset / VISUAL_SEGMENT_LENGTH) + sectionIndex * ratio;
     const indices: number[] = [];
     for (let i = start; i < start + ratio && i < this.segmentCount; i++) {
       indices.push(i);

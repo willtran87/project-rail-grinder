@@ -17,14 +17,19 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 |-----|--------|
 | W / S | Drive forward / reverse |
 | SPACE | Hold to grind (auto-drives while grinding) |
-| Q / E | Adjust stone angle (targets different parts of the rail profile) |
-| A / D | Adjust pressure (more = faster removal, higher heat) |
-| TAB | Switch between left and right rail controls |
 | SHIFT | Hold for fast travel (3x speed when not grinding) |
+| **Left Rail** | |
+| Q / E | Adjust left stone angle |
+| A / D | Adjust left pressure |
+| **Right Rail** | |
+| U / O | Adjust right stone angle |
+| J / L | Adjust right pressure |
+| **Camera & UI** | |
 | 1-5 | Camera angles (chase, side, cab, overview, grind close-up) |
 | N | Cycle time of day (dawn, day, dusk, night) |
 | P | Toggle rain |
 | M | Mute audio |
+| ESC | Pause menu (resume, restart, quit to menu) |
 | R | Restart |
 
 ## How to Play
@@ -37,9 +42,9 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 
 4. **Hold SPACE to grind** — the grinder auto-drives at a steady pace while you focus on aiming. Watch the dual rail profile displays at the bottom.
 
-5. **Adjust angle (Q/E)** to target the orange defect zones on the profile. Press TAB to switch between left and right rail — each has independent defects.
+5. **Adjust angle** to target the orange defect zones on the profile. Left rail uses Q/E, right rail uses U/O. Both rails have independent defects and can be adjusted simultaneously.
 
-6. **Adjust pressure (A/D)** — higher pressure removes more metal but generates heat. Overheating reduces effectiveness. Watch the heat gauge.
+6. **Adjust pressure** — left rail uses A/D, right rail uses J/L. Higher pressure removes more metal but generates heat. Overheating reduces effectiveness. Watch the heat gauge.
 
 7. **Don't over-grind** — if you remove too much metal past the green target line, you'll hear an alarm and the profile flashes red. Over-ground damage is permanent.
 

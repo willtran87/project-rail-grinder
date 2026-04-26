@@ -70,7 +70,6 @@ export class Game {
 
 
   // Stone configuration — independent per rail
-  private selectedRail: 'left' | 'right' = 'left';
   private stoneAngle: { left: number; right: number } = { left: 0, right: 0 };
   private stonePressure: { left: number; right: number } = { left: 50, right: 50 };
   private stoneHeat: number = 0;
@@ -136,16 +135,24 @@ export class Game {
   private isPaused: boolean = false;
   private pauseMenu!: HTMLElement;
 
-  // Pre-allocated temp objects to avoid per-frame garbage (reused in update loops)
+  // Pre-allocated temp objects to avoid per-frame garbage
   private _tmpVec = new THREE.Vector3();
   private _tmpVec2 = new THREE.Vector3();
   private _tmpVec3 = new THREE.Vector3();
   private _tmpQuat = new THREE.Quaternion();
   private _tmpMat = new THREE.Matrix4();
   private _worldUp = new THREE.Vector3(0, 1, 0);
+  private _camPos = new THREE.Vector3();
+  private _camLook = new THREE.Vector3();
+
+  // Throttle for expensive geometry rebuilds
+  private _rebuildTimer: number = 0;
+  private _rebuildInterval: number = 0.15; // rebuild meshes at most ~7x/sec
+
+  // Pre-allocated spark emit point pool (avoids 96 clones/frame)
+  private _emitPool: Array<{ position: THREE.Vector3; forward: THREE.Vector3; right: THREE.Vector3 }> = [];
 
   private totalMetalRemoved: number = 0;
-  private grindCount: number = 0;
 
   // Audio initialized flag
   private audioReady: boolean = false;
@@ -249,8 +256,6 @@ export class Game {
     this.environment = new Environment(this.track);
     this.engine.scene.add(this.environment.group);
 
-    // Train
-
     // Ground
     this.createGround();
 
@@ -314,7 +319,6 @@ export class Game {
     this.updateTrackMapDefects();
 
 
-    // Placeholder tutorial
     this.tutorial = new TutorialManager();
 
     // Show job selection screen first
@@ -362,8 +366,14 @@ export class Game {
     let seed = 42;
     const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 
+    const offset = this.track.sectionOffset;
     for (let vi = 0; vi < totalVisual; vi++) {
-      const secIdx = Math.floor(vi / Math.max(1, Math.round(totalVisual / SEGMENT_COUNT)));
+      const viDist = vi * 5; // VISUAL_SEGMENT_LENGTH = 5
+      const secIdx = this.track.getSectionIndex(viDist);
+      // Skip visual segments in the lead-in zone (before first section)
+      if (viDist < offset) continue;
+      // Skip visual segments past the last section
+      if (secIdx >= SEGMENT_COUNT) continue;
       const jobSeverity = this.currentJob ? this.currentJob.defectSeverity : 0.6;
       // First 2 sections are trivially easy for onboarding
       const easyMult = (this.isFirstJob && secIdx < 2) ? 0.15 : 1.0;
@@ -514,9 +524,8 @@ export class Game {
     const tutResult = this.guidedTutorial.update(dt, {
       isGrinding: this.isGrinding,
       speed: this.grinderSpeed,
-      angleChanged: this.input.isKeyDown('q') || this.input.isKeyDown('e'),
-      pressureChanged: this.input.isKeyDown('a') || this.input.isKeyDown('d'),
-      tabPressed: this.input.wasKeyPressed('tab'),
+      angleChanged: this.input.isKeyDown('q') || this.input.isKeyDown('e') || this.input.isKeyDown('u') || this.input.isKeyDown('o'),
+      pressureChanged: this.input.isKeyDown('a') || this.input.isKeyDown('d') || this.input.isKeyDown('j') || this.input.isKeyDown('l'),
       sectionsCompleted: this.segmentCompleted.filter(c => c).length,
     });
     // Auto-move during early tutorial
@@ -572,7 +581,10 @@ export class Game {
     this.radioDispatch.update(dt);
 
     // Track map + next target
-    this.trackMap.setGrinderPosition(this.grinderPosition / TRACK_LENGTH);
+    // Normalize grinder position to the section area (offset to end of last section)
+    const secOffset = this.track.sectionOffset;
+    const secEnd = secOffset + SEGMENT_COUNT * 20; // GAME_SECTION_LENGTH = 20
+    this.trackMap.setGrinderPosition((this.grinderPosition - secOffset) / (secEnd - secOffset));
     // Find nearest unfinished section
     const curSec = this.track.getSectionIndex(this.grinderPosition);
     let nextTarget = -1;
@@ -687,28 +699,32 @@ export class Game {
       car.group.quaternion.setFromRotationMatrix(this._tmpMat.makeBasis(right, up, fwd));
     }
 
-    // TAB switches selected rail
-    if (this.input.wasKeyPressed('tab')) {
-      this.selectedRail = this.selectedRail === 'left' ? 'right' : 'left';
-    }
-
-    // Stone angle: Q/E — applies to selected rail
-    // Right rail is mirrored, so invert Q/E direction so Q=left and E=right on screen
-    const r = this.selectedRail;
-    const angleDir = r === 'right' ? -1 : 1;
+    // Left rail: Q/E angle, A/D pressure
     if (this.input.isKeyDown('q')) {
-      this.stoneAngle[r] = Math.max(-40, this.stoneAngle[r] - 60 * angleDir * dt);
+      this.stoneAngle.left = Math.max(-40, this.stoneAngle.left - 60 * dt);
     }
     if (this.input.isKeyDown('e')) {
-      this.stoneAngle[r] = Math.min(40, this.stoneAngle[r] + 60 * angleDir * dt);
+      this.stoneAngle.left = Math.min(40, this.stoneAngle.left + 60 * dt);
     }
-
-    // Stone pressure: A/D — applies to selected rail
     if (this.input.isKeyDown('a')) {
-      this.stonePressure[r] = Math.max(0, this.stonePressure[r] - 80 * dt);
+      this.stonePressure.left = Math.max(0, this.stonePressure.left - 80 * dt);
     }
     if (this.input.isKeyDown('d')) {
-      this.stonePressure[r] = Math.min(100, this.stonePressure[r] + 80 * dt);
+      this.stonePressure.left = Math.min(100, this.stonePressure.left + 80 * dt);
+    }
+
+    // Right rail: U/O angle, J/L pressure (mirrored direction for right rail)
+    if (this.input.isKeyDown('u')) {
+      this.stoneAngle.right = Math.max(-40, this.stoneAngle.right + 60 * dt);
+    }
+    if (this.input.isKeyDown('o')) {
+      this.stoneAngle.right = Math.min(40, this.stoneAngle.right - 60 * dt);
+    }
+    if (this.input.isKeyDown('j')) {
+      this.stonePressure.right = Math.max(0, this.stonePressure.right - 80 * dt);
+    }
+    if (this.input.isKeyDown('l')) {
+      this.stonePressure.right = Math.min(100, this.stonePressure.right + 80 * dt);
     }
 
     // Update stone panel UI
@@ -778,7 +794,7 @@ export class Game {
 
       const p = this.track.getProfile(visualSegIndex, rail);
       p.removeMetalAt(grindX, contactWidth, depth);
-      this.track.rebuildSegment(visualSegIndex, rail);
+      // Mesh rebuild is throttled below (expensive ExtrudeGeometry)
       this.totalMetalRemoved += depth;
 
       // Check over-grind per rail
@@ -798,7 +814,6 @@ export class Game {
       }
     }
 
-    this.grindCount++;
     this.segmentGrindTime[sectionIndex] += dt;
 
     // Track pass count
@@ -807,7 +822,14 @@ export class Game {
       this.lastSectionIndex = sectionIndex;
     }
 
-    // VISUAL TRANSFORMATION: update the 3D rail appearance
+    // Throttled mesh rebuild (ExtrudeGeometry is expensive — ~7x/sec instead of 60)
+    this._rebuildTimer += dt;
+    if (this._rebuildTimer >= this._rebuildInterval) {
+      this._rebuildTimer = 0;
+      this.track.rebuildSegment(visualSegIndex, 'left');
+      this.track.rebuildSegment(visualSegIndex, 'right');
+    }
+
     const grindProgress = Math.min(1, this.segmentGrindTime[sectionIndex] / 5);
     const visualSegs = this.track.getSegmentsForSection(sectionIndex);
     for (const vi of visualSegs) {
@@ -841,20 +863,29 @@ export class Game {
       this.completeSegment(sectionIndex, accuracy);
     }
 
-    // SPARKS + LIGHTS from all grinding cars
-    // 4 cars at offsets -12, 0, 12, 24. Each has 8 grindstones spaced 1.3m apart
+    // SPARKS + LIGHTS — use pre-allocated emit point pool (avoids 96 clones/frame)
     const grindCarPositions = [-12, 0, 12, 24];
-    const emitPoints: import('./effects/SparkSystem').EmitPoint[] = [];
-
-    // Spark emit points from all grindstones
+    // Ensure pool is large enough
+    while (this._emitPool.length < 32) {
+      this._emitPool.push({ position: new THREE.Vector3(), forward: new THREE.Vector3(), right: new THREE.Vector3() });
+    }
+    let epIdx = 0;
     for (const carOff of grindCarPositions) {
       for (let si = 0; si < 8; si++) {
         const stoneZ = -4.5 + si * 1.3;
         const dist = Math.max(0.1, Math.min(TRACK_LENGTH - 0.1, this.grinderPosition + carOff + stoneZ));
         const stoneTp = this.track.getTrackPoint(dist);
-        emitPoints.push({ position: stoneTp.position.clone(), forward: stoneTp.forward.clone(), right: stoneTp.right.clone() });
+        const ep = this._emitPool[epIdx++];
+        ep.position.copy(stoneTp.position);
+        ep.forward.copy(stoneTp.forward);
+        ep.right.copy(stoneTp.right);
       }
     }
+    // Pass the pool with the count — SparkSystem reads emitPoints.length
+    const emitPoints = this._emitPool;
+    // Temporarily trim to active count for the spark system
+    const savedLen = emitPoints.length;
+    emitPoints.length = epIdx;
 
     // 4 efficient work lights: headlight, front grind, rear grind, tail
     const lightOffsets = [-42, -6, 18, 67];
@@ -867,6 +898,7 @@ export class Game {
     }
 
     this.sparkSystem.setEmitPoints(emitPoints, avgPressure / 50);
+    emitPoints.length = savedLen; // restore pool size
     this.grinder.setGrinding(true);
 
     // Contact glow at the center of the grinding section
@@ -909,7 +941,9 @@ export class Game {
     // Animate revenue train position on the track map
     // Train starts at the far end (1.0) and moves toward the grinder position
     this.revenueTrainProgress = 1 - (remaining / this.deadlineTotal);
-    const grinderT = this.grinderPosition / TRACK_LENGTH;
+    const secOff = this.track.sectionOffset;
+    const secE = secOff + SEGMENT_COUNT * 20;
+    const grinderT = (this.grinderPosition - secOff) / (secE - secOff);
     // Train position: starts at end of track, moves toward grinder
     const trainT = 1.0 - this.revenueTrainProgress * (1.0 - grinderT);
     this.trackMap.setRevenueTrainPosition(trainT);
@@ -1016,44 +1050,44 @@ export class Game {
 
     switch (this.cameraAngle) {
       case 'chase':
-        targetPos = tp.position.clone()
-          .add(tp.forward.clone().multiplyScalar(-12))
-          .add(tp.right.clone().multiplyScalar(-3))
-          .add(new THREE.Vector3(0, 5, 0));
-        targetLook = tpAhead.position.clone().add(new THREE.Vector3(0, 1, 0));
+        targetPos = this._camPos.copy(tp.position)
+          .addScaledVector(tp.forward, -12)
+          .addScaledVector(tp.right, -3);
+        targetPos.y += 5;
+        targetLook = this._camLook.copy(tpAhead.position);
+        targetLook.y += 1;
         break;
       case 'side':
-        targetPos = tp.position.clone()
-          .add(tp.right.clone().multiplyScalar(10))
-          .add(new THREE.Vector3(0, 3, 0));
-        targetLook = tp.position.clone().add(new THREE.Vector3(0, 1, 0));
+        targetPos = this._camPos.copy(tp.position)
+          .addScaledVector(tp.right, 10);
+        targetPos.y += 3;
+        targetLook = this._camLook.copy(tp.position);
+        targetLook.y += 1;
         break;
       case 'cab':
-        targetPos = tp.position.clone()
-          .add(tp.forward.clone().multiplyScalar(-7))
-          .add(new THREE.Vector3(0, 3, 0));
-        targetLook = tpAhead.position.clone().add(new THREE.Vector3(0, 0.5, 0));
+        targetPos = this._camPos.copy(tp.position)
+          .addScaledVector(tp.forward, -7);
+        targetPos.y += 3;
+        targetLook = this._camLook.copy(tpAhead.position);
+        targetLook.y += 0.5;
         break;
       case 'overview':
-        targetPos = tp.position.clone()
-          .add(tp.forward.clone().multiplyScalar(-15))
-          .add(tp.right.clone().multiplyScalar(-8))
-          .add(new THREE.Vector3(0, 25, 0));
-        targetLook = tpAhead.position.clone();
+        targetPos = this._camPos.copy(tp.position)
+          .addScaledVector(tp.forward, -15)
+          .addScaledVector(tp.right, -8);
+        targetPos.y += 25;
+        targetLook = this._camLook.copy(tpAhead.position);
         break;
 
       case 'grind': {
-        // Close-up view right at rail level next to the grindstones
-        // Positioned beside the second grinding car looking at the stone/rail contact
         const grindPt = this.track.getTrackPoint(
           Math.max(0.1, Math.min(TRACK_LENGTH - 0.1, this.grinderPosition + 2))
         );
-        targetPos = grindPt.position.clone()
-          .add(grindPt.right.clone().multiplyScalar(2.5))
-          .add(new THREE.Vector3(0, 0.8, 0));
-        targetLook = grindPt.position.clone()
-          .add(grindPt.forward.clone().multiplyScalar(1))
-          .add(new THREE.Vector3(0, 0, 0));
+        targetPos = this._camPos.copy(grindPt.position)
+          .addScaledVector(grindPt.right, 2.5);
+        targetPos.y += 0.8;
+        targetLook = this._camLook.copy(grindPt.position)
+          .addScaledVector(grindPt.forward, 1);
         break;
       }
     }
@@ -1091,24 +1125,11 @@ export class Game {
   }
 
   private updateStonePanel(): void {
-    const sel = this.selectedRail;
-    const angle = this.stoneAngle[sel];
-    const pressure = this.stonePressure[sel];
-
-    // Update selected rail's controls
-    this.angleValue.innerHTML = `${angle.toFixed(0)}&deg;`;
-    this.pressureValue.textContent = `${pressure.toFixed(0)}%`;
-
-    // Update both rails' readouts (cached elements)
-    if (sel === 'left') {
-      this.angleValueR.innerHTML = `${this.stoneAngle.right.toFixed(0)}&deg;`;
-      this.pressureValueR.textContent = `${this.stonePressure.right.toFixed(0)}%`;
-    } else {
-      this.angleValue.innerHTML = `${this.stoneAngle.left.toFixed(0)}&deg;`;
-      this.pressureValue.textContent = `${this.stonePressure.left.toFixed(0)}%`;
-      this.angleValueR.innerHTML = `${angle.toFixed(0)}&deg;`;
-      this.pressureValueR.textContent = `${pressure.toFixed(0)}%`;
-    }
+    // Always show both rails
+    this.angleValue.textContent = `${this.stoneAngle.left.toFixed(0)}°`;
+    this.pressureValue.textContent = `${this.stonePressure.left.toFixed(0)}%`;
+    this.angleValueR.textContent = `${this.stoneAngle.right.toFixed(0)}°`;
+    this.pressureValueR.textContent = `${this.stonePressure.right.toFixed(0)}%`;
 
     const speedMph = Math.abs(this.grinderSpeed * 2.237);
     this.speedValue.textContent = speedMph.toFixed(1);
@@ -1127,11 +1148,11 @@ export class Game {
       this.grindStatusEl.textContent = 'DRIVING';
     }
 
-    // Highlight selected rail label
-    this.leftRailLabel.style.color = sel === 'left' ? 'var(--ui-accent)' : 'var(--ui-dim)';
-    this.rightRailLabel.style.color = sel === 'right' ? 'var(--ui-accent)' : 'var(--ui-dim)';
-    this.leftRailLabel.style.fontWeight = sel === 'left' ? '700' : '400';
-    this.rightRailLabel.style.fontWeight = sel === 'right' ? '700' : '400';
+    // Both rails always active
+    this.leftRailLabel.style.color = 'var(--ui-accent)';
+    this.rightRailLabel.style.color = 'var(--ui-accent)';
+    this.leftRailLabel.style.fontWeight = '700';
+    this.rightRailLabel.style.fontWeight = '700';
   }
 
   private checkJobComplete(): void {
@@ -1163,10 +1184,9 @@ export class Game {
 
     this.inspectionTimer += dt;
 
-    // Auto-drive forward at moderate speed
-    this.grinderSpeed = 6;
+    // Fast drive through the section area
+    this.grinderSpeed = 25;
     this.grinderPosition += this.grinderSpeed * dt;
-    this.grinderPosition = Math.min(TRACK_LENGTH - 75, this.grinderPosition);
 
     // Cinematic low-angle side camera tracking the gleaming rails
     const cam = this.engine.camera;
@@ -1194,10 +1214,11 @@ export class Game {
       car.group.quaternion.setFromRotationMatrix(this._tmpMat.makeBasis(right, up, fwd));
     }
 
-    // End when we've traversed most of the track
-    if (this.grinderPosition > TRACK_LENGTH - 80) {
+    // End after passing through the section area
+    const secEnd = this.track.sectionOffset + SEGMENT_COUNT * 20 + 30;
+    if (this.grinderPosition > secEnd) {
       this.inspectionPass = false;
-      setTimeout(() => this.showCompletionReport(), 1000);
+      setTimeout(() => this.showCompletionReport(), 500);
     }
   }
 
@@ -1254,7 +1275,7 @@ export class Game {
     }
 
     // Build new track from job definition
-    this.track = new RailTrack(job.trackPoints, undefined, job.sections);
+    this.track = new RailTrack(job.trackPoints, undefined, job.sections, 50);
     SEGMENT_COUNT = this.track.sectionCount;
     TRACK_LENGTH = this.track.totalLength;
     this.engine.scene.add(this.track.group);
@@ -1267,7 +1288,6 @@ export class Game {
     this.segmentGrindTime = new Float64Array(50);
     this.totalMetalRemoved = 0;
     this.trackRestoredFt = 0;
-    this.grindCount = 0;
     this.grinderPosition = 50;
     this.grinderSpeed = 0;
     this.lastSectionIndex = -1;

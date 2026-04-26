@@ -13,6 +13,13 @@ export class PassingTrain {
   readonly group: THREE.Group;
   readonly adjacentTrack: THREE.Group;
 
+  // Pre-allocated temps for per-frame car positioning
+  private _tv1 = new THREE.Vector3();
+  private _tv2 = new THREE.Vector3();
+  private _tv3 = new THREE.Vector3();
+  private _tm = new THREE.Matrix4();
+  private _wu = new THREE.Vector3(0, 1, 0);
+
   private active = false;
   private position = -100;
   private speed = 25;
@@ -109,27 +116,20 @@ export class PassingTrain {
       this.group.quaternion.identity();
 
       const clamp = (d: number) => Math.max(0.1, Math.min(this.totalLength - 0.1, d));
-      const worldUp = new THREE.Vector3(0, 1, 0);
 
       for (const car of this.cars) {
-        const centerDist = this.position + car.offset;
-        const frontDist = clamp(centerDist + car.halfLen);
-        const rearDist = clamp(centerDist - car.halfLen);
+        const frontPt = this.track.getTrackPoint(clamp(this.position + car.offset + car.halfLen));
+        const rearPt = this.track.getTrackPoint(clamp(this.position + car.offset - car.halfLen));
 
-        const frontPt = this.track.getTrackPoint(frontDist);
-        const rearPt = this.track.getTrackPoint(rearDist);
+        // Reuse pre-allocated temps (avoids 55 objects/frame)
+        car.group.position.lerpVectors(rearPt.position, frontPt.position, 0.5);
+        this._tv1.lerpVectors(rearPt.right, frontPt.right, 0.5).normalize();
+        car.group.position.addScaledVector(this._tv1, ADJACENT_OFFSET);
 
-        // Position at midpoint, offset laterally to adjacent track
-        const midPos = new THREE.Vector3().lerpVectors(rearPt.position, frontPt.position, 0.5);
-        const midRight = new THREE.Vector3().lerpVectors(rearPt.right, frontPt.right, 0.5).normalize();
-        car.group.position.copy(midPos).addScaledVector(midRight, ADJACENT_OFFSET);
-
-        // Orient along the bogie-to-bogie line
-        const fwd = new THREE.Vector3().subVectors(frontPt.position, rearPt.position).normalize();
-        const right = new THREE.Vector3().crossVectors(worldUp, fwd).normalize();
-        const up = new THREE.Vector3().crossVectors(fwd, right).normalize();
-        const m = new THREE.Matrix4().makeBasis(right, up, fwd);
-        car.group.quaternion.setFromRotationMatrix(m);
+        const fwd = this._tv1.subVectors(frontPt.position, rearPt.position).normalize();
+        const right = this._tv2.crossVectors(this._wu, fwd).normalize();
+        const up = this._tv3.crossVectors(fwd, right).normalize();
+        car.group.quaternion.setFromRotationMatrix(this._tm.makeBasis(right, up, fwd));
       }
     }
 
@@ -173,7 +173,7 @@ export class PassingTrain {
     }
   }
 
-  /** Build visible adjacent track: rails, ties, ballast, and ballast shoulder */
+  /** Build visible adjacent track using InstancedMesh (~5 draw calls instead of ~800) */
   private buildAdjacentTrack(): void {
     if (!this.track) return;
 
@@ -187,61 +187,69 @@ export class PassingTrain {
     const railGeo = new THREE.BoxGeometry(0.07, 0.2, 5);
     const tieGeo = new THREE.BoxGeometry(2.6, 0.12, 0.18);
 
-    for (let d = 0; d < this.totalLength; d += 5) {
+    const chunkCount = Math.floor(this.totalLength / 5);
+    const tieCount = Math.floor(this.totalLength / 0.6);
+
+    const ballastInst = new THREE.InstancedMesh(ballastGeo, ballastMat, chunkCount);
+    const shoulderInst = new THREE.InstancedMesh(shoulderGeo, shoulderMat, chunkCount * 2);
+    const railInst = new THREE.InstancedMesh(railGeo, railMat, chunkCount * 2);
+    const tieInst = new THREE.InstancedMesh(tieGeo, tieMat, tieCount);
+
+    ballastInst.receiveShadow = true;
+    shoulderInst.receiveShadow = true;
+    railInst.castShadow = true;
+    tieInst.receiveShadow = true;
+
+    const tmpPos = new THREE.Vector3();
+    const tmpRight = new THREE.Vector3();
+    const tmpMat4 = new THREE.Matrix4();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpScale = new THREE.Vector3(1, 1, 1);
+    const worldUp = new THREE.Vector3(0, 1, 0);
+
+    let shoulderIdx = 0;
+    let railIdx = 0;
+
+    for (let i = 0; i < chunkCount; i++) {
+      const d = i * 5;
       const tp = this.track.getTrackPoint(d);
 
-      // Compute proper orientation
-      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), tp.forward).normalize();
-      const up = new THREE.Vector3(0, 1, 0);
-      const mat4 = new THREE.Matrix4().makeBasis(right, up, tp.forward);
-      const quat = new THREE.Quaternion().setFromRotationMatrix(mat4);
+      tmpRight.crossVectors(worldUp, tp.forward).normalize();
+      const orientMat = tmpMat4.makeBasis(tmpRight, worldUp, tp.forward);
+      tmpQuat.setFromRotationMatrix(orientMat);
 
-      const basePos = tp.position.clone().addScaledVector(tp.right, ADJACENT_OFFSET);
+      tmpPos.copy(tp.position).addScaledVector(tp.right, ADJACENT_OFFSET);
 
-      // Ballast bed
-      const ballast = new THREE.Mesh(ballastGeo, ballastMat);
-      ballast.position.copy(basePos);
-      ballast.position.y = -0.45;
-      ballast.quaternion.copy(quat);
-      ballast.receiveShadow = true;
-      this.adjacentTrack.add(ballast);
+      // Ballast
+      tmpPos.y = -0.45;
+      ballastInst.setMatrixAt(i, tmpMat4.compose(tmpPos, tmpQuat, tmpScale));
 
-      // Ballast shoulders (left and right of the track bed)
+      // Shoulders
       for (const side of [-1, 1]) {
-        const shoulder = new THREE.Mesh(shoulderGeo, shoulderMat);
-        shoulder.position.copy(basePos);
-        shoulder.position.addScaledVector(right, side * 2.0);
-        shoulder.position.y = -0.5;
-        shoulder.quaternion.copy(quat);
-        shoulder.receiveShadow = true;
-        this.adjacentTrack.add(shoulder);
+        const sPos = tmpPos.clone().addScaledVector(tmpRight, side * 2.0);
+        sPos.y = -0.5;
+        shoulderInst.setMatrixAt(shoulderIdx++, tmpMat4.compose(sPos, tmpQuat, tmpScale));
       }
 
       // Rails
       for (const side of [-1, 1]) {
-        const rail = new THREE.Mesh(railGeo, railMat);
-        rail.position.copy(basePos);
-        rail.position.addScaledVector(right, side * GAUGE_HALF);
-        rail.position.y = -0.22;
-        rail.quaternion.copy(quat);
-        rail.castShadow = true;
-        this.adjacentTrack.add(rail);
+        const rPos = tmpPos.clone().addScaledVector(tmpRight, side * GAUGE_HALF);
+        rPos.y = -0.22;
+        railInst.setMatrixAt(railIdx++, tmpMat4.compose(rPos, tmpQuat, tmpScale));
       }
     }
 
-    // Ties (denser than rail/ballast segments)
-    for (let d = 0; d < this.totalLength; d += 0.6) {
+    // Ties
+    for (let i = 0; i < tieCount; i++) {
+      const d = i * 0.6;
       const tp = this.track.getTrackPoint(d);
-      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), tp.forward).normalize();
-      const mat4 = new THREE.Matrix4().makeBasis(right, new THREE.Vector3(0, 1, 0), tp.forward);
-      const quat = new THREE.Quaternion().setFromRotationMatrix(mat4);
-
-      const tie = new THREE.Mesh(tieGeo, tieMat);
-      tie.position.copy(tp.position).addScaledVector(tp.right, ADJACENT_OFFSET);
-      tie.position.y = -0.30;
-      tie.quaternion.copy(quat);
-      tie.receiveShadow = true;
-      this.adjacentTrack.add(tie);
+      tmpRight.crossVectors(worldUp, tp.forward).normalize();
+      tmpQuat.setFromRotationMatrix(tmpMat4.makeBasis(tmpRight, worldUp, tp.forward));
+      tmpPos.copy(tp.position).addScaledVector(tp.right, ADJACENT_OFFSET);
+      tmpPos.y = -0.30;
+      tieInst.setMatrixAt(i, tmpMat4.compose(tmpPos, tmpQuat, tmpScale));
     }
+
+    this.adjacentTrack.add(ballastInst, shoulderInst, railInst, tieInst);
   }
 }

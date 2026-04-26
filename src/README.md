@@ -17,8 +17,7 @@ src/
 │   └── ProfileRenderer.ts   # 2D canvas overlay drawing the profile curves
 ├── world/
 │   ├── RailGrinder.ts       # 9-car grinding consist with detailed geometry
-│   ├── Train.ts             # Freight train (passing traffic)
-│   ├── PassingTrain.ts      # Passing train logic + adjacent track construction
+│   ├── PassingTrain.ts      # Freight train on adjacent track + InstancedMesh track
 │   ├── Environment.ts       # Trees, rocks, grass, terrain, mountains, stars
 │   ├── DayNightCycle.ts     # Time-of-day lighting with color palettes
 │   ├── Weather.ts           # Rain particle system
@@ -87,13 +86,19 @@ The track is a `CatmullRomCurve3` with 1000 arc-length subdivisions. Everything 
 Each car computes its orientation from the line between its front and rear bogie positions on the spline. This naturally produces smooth articulation through curves — a long car on a wide curve barely rotates, a short car on a tight curve rotates more.
 
 ### Dual Rail Independence
-Left and right rails have independent profiles, defects, and stone settings. The right rail's profile display is mirrored so gauge sides face inward (as viewed from above). Q/E angle controls are inverted for the right rail to match the visual.
+Left and right rails have independent profiles, defects, and controls. Left rail uses Q/E for angle and A/D for pressure; right rail uses U/O for angle and J/L for pressure (mirrored direction so controls match the visual). The right rail's profile display is mirrored so gauge sides face inward.
 
-### InstancedMesh for Scenery
-Trees, bushes, rocks, grass, and ballast shoulders use `InstancedMesh` to reduce draw calls from ~2000 to ~15. Each scenery type shares one geometry and one material across all instances.
+### InstancedMesh for Scenery and Adjacent Track
+Trees, bushes, rocks, grass use `InstancedMesh` to reduce draw calls from ~2000 to ~15. The adjacent passing-train track (rails, ties, ballast, shoulders) also uses `InstancedMesh` — 4 draw calls instead of ~800.
+
+### Track Section Offset
+The track has a 50m lead-in zone before game sections begin (`sectionOffset`). This lets the 9-car grinder consist spread out along the track without trailing cars clamping to position 0. `getSectionIndex()` and `getSegmentsForSection()` account for this offset; `getSegmentIndex()` (visual only) does not.
 
 ### Pre-allocated Temp Objects
-Hot-path methods (`handleGrinderMovement`, `handleInspectionPass`, `getTrackPoint`) reuse pre-allocated `Vector3`/`Quaternion`/`Matrix4` objects to avoid per-frame garbage collection pressure.
+Hot-path methods (`handleGrinderMovement`, `handleInspectionPass`, `getTrackPoint`, `handleCamera`) reuse pre-allocated `Vector3`/`Quaternion`/`Matrix4` objects to avoid per-frame garbage collection pressure.
+
+### Occupancy Grid for Scenery Placement
+`Environment` pre-computes a hash-based occupancy grid at construction time so `isOnTrack()` is O(1) instead of sampling 101 spline points per call.
 
 ### Procedural Everything
 No external files are loaded. Textures are drawn on `<canvas>` elements, audio is synthesized with Web Audio API oscillators and noise buffers, the US map is drawn from coordinate arrays, and all 3D models are built from primitive geometries.
