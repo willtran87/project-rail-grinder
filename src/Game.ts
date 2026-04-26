@@ -126,6 +126,7 @@ export class Game {
   private deadlineTotal: number = 0;
   private deadlineWarned: boolean = false;
   private sectionsAtDeadlineStart: number = 0;
+  private revenueTrainProgress: number = 0; // 0 = at end of track, 1 = arrived at grinder
 
   // Inspection pass
   private inspectionPass: boolean = false;
@@ -852,15 +853,15 @@ export class Game {
 
     if (!this.deadlineActive) {
       this.deadlineTimer += dt;
-      if (this.deadlineTimer > 30) { // 30 seconds after tutorial ends or last train
+      this.trackMap.setRevenueTrainPosition(-1); // hide train indicator
+      if (this.deadlineTimer > 30) {
         this.deadlineActive = true;
         this.deadlineTotal = 120 + Math.random() * 120; // 2-4 minute window
         this.deadlineTimer = this.deadlineTotal;
         this.deadlineWarned = false;
+        this.revenueTrainProgress = 0;
         this.sectionsAtDeadlineStart = this.segmentCompleted.filter(c => c).length;
         this.deadlineBar.style.display = 'flex';
-
-        // Radio announcement
         if (this.audioReady) this.audio.playDing();
       }
       return;
@@ -871,6 +872,14 @@ export class Game {
     const minutes = Math.floor(remaining / 60);
     const seconds = Math.floor(remaining % 60);
     this.deadlineTime.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+    // Animate revenue train position on the track map
+    // Train starts at the far end (1.0) and moves toward the grinder position
+    this.revenueTrainProgress = 1 - (remaining / this.deadlineTotal);
+    const grinderT = this.grinderPosition / TRACK_LENGTH;
+    // Train position: starts at end of track, moves toward grinder
+    const trainT = 1.0 - this.revenueTrainProgress * (1.0 - grinderT);
+    this.trackMap.setRevenueTrainPosition(trainT);
 
     // Color based on urgency
     if (remaining < 30) {
@@ -884,7 +893,7 @@ export class Game {
       this.deadlineBar.style.borderColor = 'rgba(255,100,0,0.2)';
     }
 
-    // Warning at 30 seconds
+    // Warning at 30 seconds — train horn sound
     if (remaining < 30 && !this.deadlineWarned) {
       this.deadlineWarned = true;
       if (this.audioReady) this.audio.playOvergrindAlarm();
@@ -895,12 +904,13 @@ export class Game {
       this.deadlineActive = false;
       this.deadlineTimer = 0;
       this.deadlineBar.style.display = 'none';
+      this.trackMap.setRevenueTrainPosition(-1);
 
-      // Trigger a passing train on the main track
-      // Show how many sections were completed during this window
       const completed = this.segmentCompleted.filter(c => c).length - this.sectionsAtDeadlineStart;
       if (completed > 0) {
         this.floatingScore.show(`${completed} sections cleared!`, '#44ff44');
+      } else {
+        this.floatingScore.show('TRAIN PASSED — NO SECTIONS CLEARED', '#ff4444');
       }
 
       if (this.audioReady) this.audio.playSegmentComplete();

@@ -69,9 +69,11 @@ export class TrackMap {
 
   /** Index of nearest unfinished section (-1 if all done) */
   private nextTarget: number = -1;
-  setNextTarget(index: number): void {
-    this.nextTarget = index;
-  }
+  setNextTarget(index: number): void { this.nextTarget = index; }
+
+  /** Revenue train position (0-1 along track, -1 if not active) */
+  private revenueTrainT: number = -1;
+  setRevenueTrainPosition(t: number): void { this.revenueTrainT = t; }
 
   /** Redraw the map */
   draw(): void {
@@ -189,6 +191,35 @@ export class TrackMap {
         ctx.textAlign = 'center';
         ctx.fillText('NEXT', ntX, trackY + barH / 2 + 17);
       }
+    }
+
+    // Revenue train approaching (red triangle moving along the track)
+    if (this.revenueTrainT >= 0 && this.revenueTrainT <= 1) {
+      const rtX = padding + this.revenueTrainT * trackW;
+
+      // Danger zone highlight from train to end of track
+      ctx.fillStyle = 'rgba(255, 30, 30, 0.06)';
+      ctx.fillRect(rtX, trackY - barH / 2 - 1, padding + trackW - rtX, barH + 2);
+
+      // Pulsing red glow around train position
+      const pulse = 0.4 + Math.sin(Date.now() * 0.008) * 0.2;
+      ctx.fillStyle = `rgba(255, 30, 30, ${pulse * 0.15})`;
+      ctx.beginPath(); ctx.arc(rtX, trackY, 14, 0, Math.PI * 2); ctx.fill();
+
+      // Train icon (red triangle pointing left = approaching)
+      ctx.fillStyle = `rgba(255, 40, 40, ${pulse + 0.3})`;
+      ctx.beginPath();
+      ctx.moveTo(rtX - 6, trackY);
+      ctx.lineTo(rtX + 4, trackY - 6);
+      ctx.lineTo(rtX + 4, trackY + 6);
+      ctx.closePath();
+      ctx.fill();
+
+      // Label
+      ctx.fillStyle = '#ff4444';
+      ctx.font = '6px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('TRAIN', rtX, trackY - barH / 2 - 12);
     }
   }
 
