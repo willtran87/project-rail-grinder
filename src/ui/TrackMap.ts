@@ -8,6 +8,7 @@
  * This tells the player WHERE on the track they are, WHERE defects are,
  * and WHAT still needs work — the "inspection report" before grinding.
  */
+import { getPalette } from './palette';
 
 export interface SegmentStatus {
   defectSeverity: number;
@@ -106,22 +107,24 @@ export class TrackMap {
       const x = padding + i * segW;
 
       // Background bar showing defect severity
+      // Colours come from the active palette (normal or colour-blind — key C)
+      const pal = getPalette();
       let barColor: string;
       if (seg.completed) {
-        barColor = '#22aa44'; // green = done
+        barColor = pal.mapDone;
       } else if (seg.grindProgress > 0.01) {
         // Being worked on - show accuracy
         const acc = seg.accuracy;
-        if (acc > 0.8) barColor = '#88cc44';
-        else if (acc > 0.5) barColor = '#ccaa22';
-        else barColor = '#cc6622';
+        if (acc > 0.8) barColor = pal.mapWorkGood;
+        else if (acc > 0.5) barColor = pal.mapWorkMid;
+        else barColor = pal.mapWorkPoor;
       } else {
         // Not started - show defect severity
         const sev = seg.defectSeverity;
-        if (sev > 0.7) barColor = '#cc2222';
-        else if (sev > 0.4) barColor = '#cc6622';
-        else if (sev > 0.1) barColor = '#ccaa22';
-        else barColor = '#446644';
+        if (sev > 0.7) barColor = pal.mapSevere;
+        else if (sev > 0.4) barColor = pal.mapModerate;
+        else if (sev > 0.1) barColor = pal.mapLight;
+        else barColor = pal.mapNone;
       }
 
       // Segment bar

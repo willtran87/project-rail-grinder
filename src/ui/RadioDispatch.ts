@@ -33,6 +33,7 @@ export class RadioDispatch {
 
   constructor() {
     this.container = document.createElement('div');
+    this.container.id = 'radio-dispatch';
     this.container.style.cssText = `
       position: absolute;
       top: 70px;

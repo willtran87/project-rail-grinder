@@ -11,7 +11,13 @@ src/
 │   ├── InputManager.ts      # Keyboard and mouse state tracking
 │   ├── EventBus.ts          # Simple pub/sub for decoupled communication
 │   ├── CameraController.ts  # Camera views (1-5), screen shake, inspection cinematic
+│   ├── storage.ts           # Safe localStorage wrapper (never throws)
 │   └── dispose.ts           # Frees GPU memory of discarded scene objects
+├── game/                    # Pure game logic — no Three.js/DOM, fully unit-tested
+│   ├── rules.ts             # ALL tuning numbers + scoring formulas (rebalance here)
+│   ├── sectionMetrics.ts    # Accuracy/deviation of a whole 20m section
+│   ├── progress.ts          # Personal bests per job (saved in localStorage)
+│   └── *.test.ts            # Tests for the above (npm test)
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
 │   ├── RailSegment.ts       # 3D mesh extruded from a profile, with visual state
@@ -27,6 +33,7 @@ src/
 │   ├── Weather.ts           # Rain particle system
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
+│   ├── GrindEffects.ts      # Sparks + work lights + contact glow, driven per frame
 │   ├── SparkSystem.ts       # Grinding spark particles (500+, color gradient)
 │   └── GrindContact.ts      # Glowing contact point and ground trail
 ├── audio/
@@ -35,6 +42,8 @@ src/
 │   ├── TrackMap.ts           # Top-of-screen track progress strip
 │   ├── ProfileRenderer.ts   # (in rail/) Dual rail profile displays
 │   ├── FloatingScore.ts     # Animated floating text popups
+│   ├── palette.ts           # Status colours + colour-blind palette (key C)
+│   ├── PerfOverlay.ts       # FPS / frame-time counter (backtick key)
 │   ├── RadioDispatch.ts     # Periodic dispatch messages
 │   ├── InspectionReport.ts  # Pre/post job reports with RQI
 │   ├── JobSelect.ts         # Job selection screen with US map
@@ -59,11 +68,11 @@ Game.ts (orchestrator)
   ├── RailGrinder ─── 9 car groups, each positioned independently via bogie method
   │   └── GrindModules[] ─── depress when grinding active
   │
-  ├── handleGrinding() ─── each frame while SPACE held:
+  ├── handleGrinding() ─── each frame while SPACE held (numbers from game/rules.ts):
   │   ├── RailProfile.removeMetalAt() ─── modifies the 2D cross-section
   │   ├── RailSegment.rebuildMesh() ─── regenerates 3D geometry
-  │   ├── RailSegment.setGrindProgress() ─── rust → steel material transition
-  │   ├── SparkSystem.setEmitPoints() ─── 32 spark sources across 4 cars
+  │   ├── RailSegment.setGrindProgress() ─── rust → steel, driven by section accuracy
+  │   ├── GrindEffects.setState() ─── 32 spark sources across 4 cars + work lights
   │   ├── AudioManager.startGrinding() ─── pitch varies with contact deviation
   │   └── ProfileRenderer.draw() ─── updates the 2D profile display
   │

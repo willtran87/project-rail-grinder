@@ -29,7 +29,9 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | N | Cycle time of day (dawn, day, dusk, night) |
 | P | Toggle rain |
 | M | Mute audio |
-| ESC | Pause menu (resume, restart, quit to menu) |
+| C | Toggle colour-blind palette (remembered) |
+| `` ` `` (backtick) | Toggle FPS / frame-time counter |
+| ESC | Pause menu (resume, restart, quit, controls list) |
 | R | Restart current job |
 
 ## How to Play
@@ -48,11 +50,13 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 
 7. **Don't over-grind** — if you remove too much metal past the green target line, you'll hear an alarm and the profile flashes red. Over-ground damage is permanent.
 
-8. **Complete a section** when both rails reach 80%+ accuracy. The slow order lifts and you see "SLOW ORDER LIFTED — TRACK SPEED 60 MPH".
+8. **Complete a section** when every 5m stretch of both rails in it reaches 80%+ accuracy (the track-map fill shows how close you are). The slow order lifts and you see "SLOW ORDER LIFTED — TRACK SPEED 60 MPH".
 
 9. **Beat the deadline** — dispatch sends revenue trains through periodically. A countdown timer shows when the next one arrives. If a train arrives and you haven't cleared any sections since the countdown started, it's delayed and costs you a star on the final report.
 
 10. **Complete all sections** to trigger the inspection pass — a cinematic camera sweep showing your finished work.
+
+11. **Beat your best** — your best stars, RQI and time for each job are saved in the browser and shown on the job cards.
 
 ## Jobs
 
@@ -67,7 +71,8 @@ Four contracts based on real US railroad corridors:
 
 - **Three.js** (r184) — 3D rendering with pixel-art downscaling
 - **TypeScript** — strict mode
-- **Vite** (v5) — dev server and bundler
+- **Vite** (v7) — dev server and bundler
+- **Vitest** (v4) — unit tests (`npm test`)
 - **Web Audio API** — procedural audio (grinding, diesel, wheel clicks, horns)
 - **Canvas 2D** — procedural textures, rail profile display, US map, title screen art
 

@@ -37,6 +37,13 @@
         background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.4) 100%);
       }
 
+      /* ---- Cinematic mode (inspection fly-by): hide the gameplay HUD ---- */
+      body.cinematic #top-bar,
+      body.cinematic #profile-container,
+      body.cinematic #track-map,
+      body.cinematic #radio-dispatch,
+      body.cinematic #deadline-bar { display: none !important; }
+
       /* ---- TOP BAR: Speed + Status (compact) ---- */
       #top-bar {
         position: absolute; top: 0; left: 0; right: 0;
@@ -362,6 +369,41 @@
             padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
           ">QUIT TO MENU</button>
         </div>
+
+        <!-- Controls reference -->
+        <div id="controls-ref" style="
+          margin-top: 28px; padding: 14px 20px; text-align: left;
+          background: rgba(14, 16, 22, 0.97); border: 1px solid var(--ui-border); border-radius: 6px;
+          font-family: var(--ui-mono); font-size: 10px; color: var(--ui-text); line-height: 1.9;
+          display: grid; grid-template-columns: auto auto; column-gap: 28px;
+        ">
+          <div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin-bottom: 4px;">DRIVE &amp; GRIND</div>
+            <div><kbd>W</kbd>/<kbd>S</kbd> forward / reverse</div>
+            <div><kbd>SPACE</kbd> hold to grind</div>
+            <div><kbd>SHIFT</kbd> fast travel</div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin: 8px 0 4px;">LEFT RAIL</div>
+            <div><kbd>Q</kbd>/<kbd>E</kbd> angle &nbsp; <kbd>A</kbd>/<kbd>D</kbd> pressure</div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin: 8px 0 4px;">RIGHT RAIL</div>
+            <div><kbd>U</kbd>/<kbd>O</kbd> angle &nbsp; <kbd>J</kbd>/<kbd>L</kbd> pressure</div>
+          </div>
+          <div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin-bottom: 4px;">VIEW &amp; OPTIONS</div>
+            <div><kbd>1</kbd>-<kbd>5</kbd> camera angles</div>
+            <div><kbd>N</kbd> time of day &nbsp; <kbd>P</kbd> rain</div>
+            <div><kbd>M</kbd> mute</div>
+            <div><kbd>C</kbd> colour-blind palette</div>
+            <div><kbd>`</kbd> FPS counter</div>
+            <div><kbd>R</kbd> restart job &nbsp; <kbd>ESC</kbd> pause</div>
+          </div>
+        </div>
+        <style>
+          #controls-ref kbd {
+            display: inline-block; min-width: 14px; padding: 0 5px; text-align: center;
+            background: rgba(255,255,255,0.1); border-radius: 3px; color: var(--ui-accent);
+            font-family: var(--ui-mono); font-size: 10px;
+          }
+        </style>
       </div>
     </div>
 

@@ -45,6 +45,7 @@ export interface CompletionReport extends JobReport {
   rqiBefore: number;
   rqiAfter: number;
   missedWindows: number;  // revenue trains that arrived with no sections cleared
+  newBest: boolean;       // beat the saved personal best for this job
 }
 
 const DEFECT_NAMES = [
@@ -291,6 +292,7 @@ export class InspectionReport {
             <div style="color: #44ff44; font-size: 8px; letter-spacing: 3px; margin-bottom: 8px;">GRINDING OPERATION COMPLETE</div>
             <div style="color: #ffaa00; font-size: 16px; margin-bottom: 4px;">POST-GRIND REPORT</div>
             <div style="font-size: 28px; color: #ffdd00; margin: 12px 0;">${starStr}</div>
+            ${report.newBest ? `<div style="font-size: 9px; color: #44ff44; letter-spacing: 3px; margin: -6px 0 10px;">&#9733; NEW PERSONAL BEST &#9733;</div>` : ''}
             <div style="font-size: 32px; color: ${gradeColor}; margin-bottom: 4px;">GRADE: ${grade}</div>
           </div>
 

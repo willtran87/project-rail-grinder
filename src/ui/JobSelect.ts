@@ -6,6 +6,7 @@
  */
 
 import * as THREE from 'three';
+import { loadRecords, formatTime, type JobRecord } from '../game/progress';
 
 export interface JobDefinition {
   id: string;
@@ -224,9 +225,24 @@ export class JobSelect {
     document.body.appendChild(this.overlay);
   }
 
+  /** "Best ★★★☆☆ · RQI 92 · 4:31" for a completed job, or a not-yet-completed hint */
+  private bestRecordHTML(record: JobRecord | undefined): string {
+    if (!record) {
+      return `<div style="margin-left: auto; color: #555;">Not completed yet</div>`;
+    }
+    const stars = '★'.repeat(record.bestStars) + '☆'.repeat(5 - record.bestStars);
+    return `
+      <div style="margin-left: auto;" title="Your personal best (completed ${record.completions}x)">
+        <span style="color: #888;">Best</span>
+        <span style="color: #ffdd00; letter-spacing: 1px;">${stars}</span>
+        <span style="color: #aaa;">RQI ${record.bestRQI.toFixed(0)} · ${formatTime(record.bestTime)}</span>
+      </div>`;
+  }
+
   /** Show job selection and return the chosen job */
   show(): Promise<JobDefinition> {
     return new Promise((resolve) => {
+      const records = loadRecords();
       let html = `
         <div style="max-width: 900px; padding: 30px 20px; margin: 20px auto;">
           <div style="text-align: center; margin-bottom: 20px;">
@@ -264,10 +280,10 @@ export class JobSelect {
             <div style="font-size: 12px; color: #888; line-height: 1.6; margin-bottom: 12px;">
               ${job.description}
             </div>
-            <div style="display: flex; gap: 16px; font-size: 11px; color: #666;">
+            <div style="display: flex; gap: 16px; font-size: 11px; color: #666; flex-wrap: wrap;">
               <div><span style="color: #aaa;">${job.trackLength}</span> track</div>
               <div><span style="color: #aaa;">${job.sections}</span> sections</div>
-              <div><span style="color: #44cc44;">${job.difficulty}</span></div>
+              ${this.bestRecordHTML(records[job.id])}
             </div>
           </div>
         `;

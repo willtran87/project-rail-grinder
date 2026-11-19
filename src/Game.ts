@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { Engine } from './core/Engine';
 import { InputManager } from './core/InputManager';
-import { RailTrack } from './rail/RailTrack';
+import { RailTrack, GAME_SECTION_LENGTH, VISUAL_SEGMENT_LENGTH } from './rail/RailTrack';
 import { RailProfile } from './rail/RailProfile';
 import { ProfileRenderer } from './rail/ProfileRenderer';
 import { Environment } from './world/Environment';
@@ -18,8 +18,7 @@ import { createGroundTexture } from './world/ProceduralTextures';
 import { RailGrinder } from './world/RailGrinder';
 import { DayNightCycle } from './world/DayNightCycle';
 import { Weather } from './world/Weather';
-import { SparkSystem } from './effects/SparkSystem';
-import { GrindContact } from './effects/GrindContact';
+import { GrindEffects } from './effects/GrindEffects';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
 import { GuidedTutorial } from './ui/GuidedTutorial';
@@ -33,6 +32,17 @@ import { disposeObject3D } from './core/dispose';
 import { CameraController } from './core/CameraController';
 import { RevenueTrainDeadline } from './world/RevenueTrainDeadline';
 import type { TargetProfile } from './types/rail';
+import {
+  COMPLETION_ACCURACY, GRIND_SPEED, COOL_RATE,
+  stoneGrindX, stoneContactWidth, heatRatePerSec, heatPenalty, removalRatePerSec,
+  sectionStars, jobStars, sectionProgress,
+} from './game/rules';
+import { sectionAccuracy, sectionMeanAccuracy, sectionWorstDeviation } from './game/sectionMetrics';
+import { recordResult } from './game/progress';
+import { PerfOverlay } from './ui/PerfOverlay';
+import { toggleColorblindMode } from './ui/palette';
+
+const RAILS = ['left', 'right'] as const;
 
 export class Game {
   private engine: Engine;
@@ -42,13 +52,13 @@ export class Game {
   private profileRenderer: ProfileRenderer;
   private environment!: Environment;
   private dayNight: DayNightCycle;
-  private sparkSystem: SparkSystem;
+  private grindEffects: GrindEffects; // sparks, work lights, contact glow
   private audio: AudioManager;
   private trackMap: TrackMap;
   private floatingScore: FloatingScore;
   private passingTrain!: PassingTrain;
-  private grindContact: GrindContact;
   private radioDispatch: RadioDispatch;
+  private perfOverlay: PerfOverlay;
   private weather: Weather;
   private inspectionReport: InspectionReport;
   private jobSelect: JobSelect;
@@ -90,12 +100,10 @@ export class Game {
   private angleValueR!: HTMLElement;
   private pressureValueR!: HTMLElement;
   private jobComplete: boolean = false;
-  private startTime: number = Date.now();
+  private playTime: number = 0; // seconds of active play this job (not paused)
 
   // Rail grinder consist
   private grinder!: RailGrinder;
-  // Dynamic grinding lights — one per grinding car
-  private grindLights: THREE.PointLight[] = [];
 
   // Camera views, screen shake, inspection cinematic
   private camera: CameraController;
@@ -133,9 +141,6 @@ export class Game {
   // Throttle for expensive geometry rebuilds
   private _rebuildTimer: number = 0;
   private _rebuildInterval: number = 0.15; // rebuild meshes at most ~7x/sec
-
-  // Pre-allocated spark emit point pool (avoids 96 clones/frame)
-  private _emitPool: Array<{ position: THREE.Vector3; forward: THREE.Vector3; right: THREE.Vector3 }> = [];
 
   private totalMetalRemoved: number = 0;
 
@@ -198,12 +203,6 @@ export class Game {
     // Rail grinder consist
     this.grinder = new RailGrinder();
     this.engine.scene.add(this.grinder.group);
-    // 4 efficient work lights that follow the grinder (headlight, 2 work area, 1 rear)
-    for (let i = 0; i < 4; i++) {
-      const light = new THREE.PointLight(0xff8833, 0, 8);
-      this.engine.scene.add(light);
-      this.grindLights.push(light);
-    }
 
     // Day/night cycle with rich color palettes
     this.dayNight = new DayNightCycle(
@@ -214,10 +213,8 @@ export class Game {
     );
     this.dayNight.setGroundMesh(this.ground);
 
-    // Spark system
-    this.sparkSystem = new SparkSystem();
-    this.engine.scene.add(this.sparkSystem.points);
-    this.engine.scene.add(this.sparkSystem.sparkLight);
+    // Sparks, work lights, contact glow
+    this.grindEffects = new GrindEffects(this.engine.scene);
 
     // Audio
     this.audio = new AudioManager();
@@ -227,10 +224,6 @@ export class Game {
 
     // Floating scores
     this.floatingScore = new FloatingScore();
-
-    // Grind contact visual effect
-    this.grindContact = new GrindContact();
-    this.engine.scene.add(this.grindContact.group);
 
     // Camera + revenue-train deadline
     this.camera = new CameraController(this.engine.camera);
@@ -243,6 +236,7 @@ export class Game {
 
     // Radio dispatch
     this.radioDispatch = new RadioDispatch();
+    this.perfOverlay = new PerfOverlay();
 
     // Weather
     this.weather = new Weather();
@@ -303,7 +297,7 @@ export class Game {
     const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 
     for (let vi = 0; vi < totalVisual; vi++) {
-      const viDist = vi * 5; // VISUAL_SEGMENT_LENGTH = 5
+      const viDist = vi * VISUAL_SEGMENT_LENGTH;
       const secIdx = this.track.getSectionIndex(viDist);
       // Skip lead-in and run-out track (outside the scored sections)
       if (secIdx < 0) continue;
@@ -360,33 +354,6 @@ export class Game {
     }
   }
 
-  /**
-   * Accuracy of a whole section: the worst "within tolerance" fraction across
-   * every visual segment in the section, on both rails. A section is only as
-   * good as its worst stretch of rail.
-   */
-  private getSectionAccuracy(sec: number): number {
-    let worst = 1;
-    for (const vi of this.track.getSegmentsForSection(sec)) {
-      for (const rail of ['left', 'right'] as const) {
-        const acc = this.track.getProfile(vi, rail).compare(this.targetProfile).withinTolerance;
-        if (acc < worst) worst = acc;
-      }
-    }
-    return worst;
-  }
-
-  /** Worst average deviation across every visual segment in a section, both rails */
-  private getSectionWorstDeviation(sec: number): number {
-    let worst = 0;
-    for (const vi of this.track.getSegmentsForSection(sec)) {
-      for (const rail of ['left', 'right'] as const) {
-        const dev = this.track.getProfile(vi, rail).compare(this.targetProfile).averageDeviation;
-        if (dev > worst) worst = dev;
-      }
-    }
-    return worst;
-  }
 
   /** Only assign slow orders to the worst ~45% of sections based on defect severity */
   private assignSlowOrders(): void {
@@ -394,7 +361,7 @@ export class Game {
     const severities: { sec: number; sev: number }[] = [];
     for (let sec = 0; sec < this.sectionCount; sec++) {
       if (this.track.getSegmentsForSection(sec).length === 0) continue;
-      severities.push({ sec, sev: this.getSectionWorstDeviation(sec) });
+      severities.push({ sec, sev: sectionWorstDeviation(this.track, this.targetProfile, sec) });
     }
 
     // Sort by severity, worst first
@@ -412,8 +379,8 @@ export class Game {
     for (let sec = 0; sec < this.sectionCount; sec++) {
       if (this.track.getSegmentsForSection(sec).length === 0) continue;
       this.trackMap.updateSegment(sec, {
-        defectSeverity: Math.min(1, this.getSectionWorstDeviation(sec) * 10),
-        accuracy: this.getSectionAccuracy(sec),
+        defectSeverity: Math.min(1, sectionWorstDeviation(this.track, this.targetProfile, sec) * 10),
+        accuracy: sectionAccuracy(this.track, this.targetProfile, sec),
         slowOrder: this.segmentSlowOrder[sec],
       });
     }
@@ -444,6 +411,15 @@ export class Game {
   }
 
   private update(dt: number): void {
+    // Settings toggles work everywhere, including menus
+    this.perfOverlay.update();
+    if (this.input.wasKeyPressed('`')) this.perfOverlay.toggle();
+    if (this.input.wasKeyPressed('c')) {
+      // Track map and profile displays read the palette every time they draw
+      const on = toggleColorblindMode();
+      this.floatingScore.show(on ? 'COLOUR-BLIND PALETTE ON' : 'COLOUR-BLIND PALETTE OFF', '#ffffff');
+    }
+
     // R restarts the current job (only during active play — never from menus)
     if (this.input.wasKeyPressed('r') && this.gameStarted && !this.jobComplete
         && !this.inspectionPass && this.currentJob) {
@@ -489,12 +465,12 @@ export class Game {
       this.grinderSpeed = 1.5;
     }
 
+    this.playTime += dt;
     this.handleGrinderMovement(dt);
     this.handleGrinding(dt);
     this.camera.update(dt, this.track, this.grinderPosition);
     this.dayNight.update(dt);
-    this.sparkSystem.update(dt);
-    this.grindContact.update(dt);
+    this.grindEffects.update(dt);
     this.grinder.update(dt);
 
     // Update rail segment animations (flash fade, etc.)
@@ -505,20 +481,11 @@ export class Game {
       }
     }
 
-    // Always update both profile displays for current visual segment
+    // Profiles are redrawn inside handleGrinding while grinding; keep them live while driving too
     if (!this.isGrinding) {
-      const visIdx = this.track.getSegmentIndex(this.grinderPosition);
-      const secIdx = this.track.getSectionIndex(this.grinderPosition);
-      const dmg = this.segmentDamage[secIdx] || 0;
-      const passes = this.segmentPasses[secIdx] || 0;
-
-      for (const rail of ['left', 'right'] as const) {
-        const prof = this.track.getProfile(visIdx, rail);
-        const renderer = rail === 'left' ? this.profileRenderer : this.profileRendererRight;
-        renderer.setWorstZones(prof.findWorstZones(this.targetProfile, 3));
-        renderer.setSegmentInfo(dmg, passes);
-        renderer.draw(prof, this.targetProfile);
-      }
+      this.drawProfiles(
+        this.track.getSegmentIndex(this.grinderPosition),
+        this.track.getSectionIndex(this.grinderPosition));
     }
 
     // Update audio
@@ -539,11 +506,11 @@ export class Game {
     // Track map + next target
     // Normalize grinder position to the section area (offset to end of last section)
     const secOffset = this.track.sectionOffset;
-    const secEnd = secOffset + this.sectionCount * 20; // GAME_SECTION_LENGTH = 20
+    const secEnd = secOffset + this.sectionCount * GAME_SECTION_LENGTH;
     this.trackMap.setGrinderPosition((this.grinderPosition - secOffset) / (secEnd - secOffset));
     // Find nearest unfinished section (clamp so lead-in/run-out still points somewhere sensible)
     const curSec = Math.max(0, Math.min(this.sectionCount - 1,
-      Math.floor((this.grinderPosition - secOffset) / 20)));
+      Math.floor((this.grinderPosition - secOffset) / GAME_SECTION_LENGTH)));
     let nextTarget = -1;
     let bestDist = Infinity;
     for (let s = 0; s < this.sectionCount; s++) {
@@ -698,96 +665,75 @@ export class Game {
     if (this.input.wasKeyPressed('5')) { this.camera.angle = 'grind';}
   }
 
+  /**
+   * Each frame: lower/raise the stones (SPACE), remove metal from the rail
+   * under the grinder, track heat / over-grinding / passes, and complete
+   * sections when they pass. Tuning numbers live in game/rules.ts.
+   */
   private handleGrinding(dt: number): void {
     const sectionIndex = this.track.getSectionIndex(this.grinderPosition);
     const visualSegIndex = this.track.getSegmentIndex(this.grinderPosition);
 
     this.isGrinding = this.input.isKeyDown(' ');
+    const avgPressure = (this.stonePressure.left + this.stonePressure.right) / 2;
 
-    // Stones cool off while lifted
-    if (!this.isGrinding) {
-      this.stoneHeat = Math.max(0, this.stoneHeat - 8 * dt);
-    }
+    // Heat: builds with pressure while grinding, cools while lifted
+    const heatChange = this.isGrinding ? heatRatePerSec(avgPressure) : -COOL_RATE;
+    this.stoneHeat = Math.max(0, Math.min(100, this.stoneHeat + heatChange * dt));
     this.overheatWarning = this.stoneHeat > 80;
     this.overgrindCooldown = Math.max(0, this.overgrindCooldown - dt);
 
-    // Always show stone aim position
-    for (const rail of ['left', 'right'] as const) {
-      const renderer = rail === 'left' ? this.profileRenderer : this.profileRendererRight;
-      renderer.setStoneContact(this.stoneAngle[rail] * 0.7,
-        10 + (100 - this.stonePressure[rail]) * 0.08,
+    // Always show where each stone is aimed on the profile displays
+    for (const rail of RAILS) {
+      this.rendererFor(rail).setStoneContact(
+        stoneGrindX(this.stoneAngle[rail]), stoneContactWidth(this.stonePressure[rail]),
         this.stonePressure[rail], true, this.isGrinding);
-      renderer.setPreview(null);
+      this.rendererFor(rail).setPreview(null);
     }
 
+    // Sparks, work lights, contact glow
+    this.grindEffects.setState(this.track, this.grinderPosition, this.isGrinding, avgPressure);
+    this.grinder.setGrinding(this.isGrinding);
+
     if (!this.isGrinding) {
-      this.grinder.setGrinding(false);
-      this.sparkSystem.stopEmitting();
-      this.grindContact.setInactive();
-      // Keep work lights on even when not grinding (night operations need light)
-      const lightOffsets = [-42, -6, 18, 67];
-      for (let li = 0; li < this.grindLights.length; li++) {
-        const ld = Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition + lightOffsets[li]));
-        const ltp = this.track.getTrackPoint(ld);
-        this.grindLights[li].position.copy(ltp.position);
-        this.grindLights[li].position.y += 2.5;
-        this.grindLights[li].intensity = li === 0 ? 4 : 1.5; // steady when not grinding
-      }
       this.audio.stopGrinding();
       return;
     }
 
-    // AUTO-SPEED: while grinding, grinder moves forward at a steady grind speed
-    // Player focuses on angle/pressure, not driving
-    const GRIND_SPEED = 2.0; // m/s — steady pace
+    // AUTO-SPEED: while grinding, the grinder creeps forward on its own;
+    // the player focuses on angle and pressure
     this.grinderSpeed = GRIND_SPEED;
 
-    // Heat builds with pressure, minus some passive cooling while grinding.
-    // Net rate: ~0/s at 25% pressure, ~3/s at 50% (overheat in ~25s), ~9/s at 100% (~9s).
-    const avgPressure = (this.stonePressure.left + this.stonePressure.right) / 2;
-    const heatRate = avgPressure * 0.12 - 3;
-    this.stoneHeat = Math.max(0, Math.min(100, this.stoneHeat + heatRate * dt));
-    const heatPenalty = this.stoneHeat > 80 ? 0.5 : this.stoneHeat > 60 ? 0.8 : 1.0;
-
-    // Grind both rails with their individual settings
-    for (const rail of ['left', 'right'] as const) {
-      const angle = this.stoneAngle[rail];
-      const pressure = this.stonePressure[rail];
-      const grindX = angle * 0.7;
-      const contactWidth = 10 + (100 - pressure) * 0.08;
-      // Metal removed per second: ~0.03mm at 50% pressure, ~0.05mm at 100%
-      const depth = (0.012 + pressure * 0.0004) * heatPenalty * dt;
-
-      const p = this.track.getProfile(visualSegIndex, rail);
-      p.removeMetalAt(grindX, contactWidth, depth);
-      // Mesh rebuild is throttled below (expensive ExtrudeGeometry)
+    // Remove metal from both rails with their individual settings
+    const penalty = heatPenalty(this.stoneHeat);
+    for (const rail of RAILS) {
+      const grindX = stoneGrindX(this.stoneAngle[rail]);
+      const depth = removalRatePerSec(this.stonePressure[rail]) * penalty * dt;
+      const profile = this.track.getProfile(visualSegIndex, rail);
+      profile.removeMetalAt(grindX, stoneContactWidth(this.stonePressure[rail]), depth);
       this.totalMetalRemoved += depth;
 
-      // Check over-grind per rail
-      const devAt = p.getDeviationAtX(grindX, this.targetProfile);
-      if (devAt < -this.targetProfile.tolerance) {
-        if (this.overgrindCooldown <= 0) {
-          this.overgrindCooldown = 1.0;
-          if (sectionIndex >= 0) {
-            this.segmentDamage[sectionIndex] = Math.max(
-              this.segmentDamage[sectionIndex] || 0,
-              p.countOverground(this.targetProfile));
-          }
-          const renderer = rail === 'left' ? this.profileRenderer : this.profileRendererRight;
-          renderer.flashBorder();
-          this.camera.shake(0.06);
-          if (this.audioReady) this.audio.playOvergrindAlarm();
+      // Over-grind: went past the target line at the stone centre
+      if (profile.getDeviationAtX(grindX, this.targetProfile) < -this.targetProfile.tolerance
+          && this.overgrindCooldown <= 0) {
+        this.overgrindCooldown = 1.0;
+        if (sectionIndex >= 0) {
+          this.segmentDamage[sectionIndex] = Math.max(
+            this.segmentDamage[sectionIndex] || 0, profile.countOverground(this.targetProfile));
         }
+        this.rendererFor(rail).flashBorder();
+        this.camera.shake(0.06);
+        if (this.audioReady) this.audio.playOvergrindAlarm();
       }
     }
 
-    // Track pass count
+    // Count a pass each time the grinder leaves a section while grinding
     if (sectionIndex !== this.lastSectionIndex) {
       if (this.lastSectionIndex >= 0) this.segmentPasses[this.lastSectionIndex]++;
       this.lastSectionIndex = sectionIndex;
     }
 
-    // Throttled mesh rebuild (ExtrudeGeometry is expensive — ~7x/sec instead of 60)
+    // Throttled 3D mesh rebuild (ExtrudeGeometry is expensive — ~7x/sec instead of 60)
     this._rebuildTimer += dt;
     if (this._rebuildTimer >= this._rebuildInterval) {
       this._rebuildTimer = 0;
@@ -797,83 +743,51 @@ export class Game {
 
     // Section scoring only applies inside the scored sections (not lead-in / run-out)
     if (sectionIndex >= 0) {
-      // Section completes only when EVERY 5m stretch of BOTH rails is 80%+ in tolerance
-      const accuracy = this.getSectionAccuracy(sectionIndex);
+      const accuracy = sectionAccuracy(this.track, this.targetProfile, sectionIndex);
+      const progress = sectionProgress(
+        this.initialSectionAccuracy[sectionIndex] ?? 0,
+        sectionMeanAccuracy(this.track, this.targetProfile, sectionIndex),
+        this.segmentCompleted[sectionIndex]);
 
-      // Rust → polished steel visual and track-map fill, driven by how close the
-      // section is to passing (not by time spent grinding — bad grinding doesn't count)
-      const grindProgress = this.getSectionProgress(sectionIndex);
+      // Rust → polished steel as the section approaches passing
       for (const vi of this.track.getSegmentsForSection(sectionIndex)) {
         if (vi < this.track.leftSegments.length) {
-          this.track.leftSegments[vi].setGrindProgress(grindProgress);
-          this.track.rightSegments[vi].setGrindProgress(grindProgress);
+          this.track.leftSegments[vi].setGrindProgress(progress);
+          this.track.rightSegments[vi].setGrindProgress(progress);
         }
       }
+      this.trackMap.updateSegment(sectionIndex, {
+        grindProgress: progress, accuracy, slowOrder: this.segmentSlowOrder[sectionIndex],
+      });
 
-      this.trackMap.updateSegment(sectionIndex, { grindProgress, accuracy, slowOrder: this.segmentSlowOrder[sectionIndex] });
-
-      if (accuracy > 0.8 && !this.segmentCompleted[sectionIndex]) {
+      if (accuracy > COMPLETION_ACCURACY && !this.segmentCompleted[sectionIndex]) {
         this.completeSegment(sectionIndex, accuracy);
       }
     }
 
-    // Update both profile displays
+    this.drawProfiles(visualSegIndex, sectionIndex);
+
+    this.camera.setShake(0.01 + (avgPressure / 100) * 0.02);
+    if (this.audioReady) this.audio.startGrinding(avgPressure / 80);
+    eventBus.emit('grind-contact', { sectionIndex });
+  }
+
+  /** The profile display for a rail */
+  private rendererFor(rail: 'left' | 'right'): ProfileRenderer {
+    return rail === 'left' ? this.profileRenderer : this.profileRendererRight;
+  }
+
+  /** Redraw both rail profile displays for the given visual segment */
+  private drawProfiles(visualSegIndex: number, sectionIndex: number): void {
     const dmg = this.segmentDamage[sectionIndex] || 0;
     const passes = this.segmentPasses[sectionIndex] || 0;
-    for (const rail of ['left', 'right'] as const) {
+    for (const rail of RAILS) {
       const profile = this.track.getProfile(visualSegIndex, rail);
-      const renderer = rail === 'left' ? this.profileRenderer : this.profileRendererRight;
+      const renderer = this.rendererFor(rail);
       renderer.setWorstZones(profile.findWorstZones(this.targetProfile, 3));
       renderer.setSegmentInfo(dmg, passes);
       renderer.draw(profile, this.targetProfile);
     }
-
-    // SPARKS + LIGHTS — use pre-allocated emit point pool (avoids 96 clones/frame)
-    const grindCarPositions = [-12, 0, 12, 24];
-    // Ensure pool is large enough
-    while (this._emitPool.length < 32) {
-      this._emitPool.push({ position: new THREE.Vector3(), forward: new THREE.Vector3(), right: new THREE.Vector3() });
-    }
-    let epIdx = 0;
-    for (const carOff of grindCarPositions) {
-      for (let si = 0; si < 8; si++) {
-        const stoneZ = -4.5 + si * 1.3;
-        const dist = Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition + carOff + stoneZ));
-        const stoneTp = this.track.getTrackPoint(dist);
-        const ep = this._emitPool[epIdx++];
-        ep.position.copy(stoneTp.position);
-        ep.forward.copy(stoneTp.forward);
-        ep.right.copy(stoneTp.right);
-      }
-    }
-    // Pass the pool with the count — SparkSystem reads emitPoints.length
-    const emitPoints = this._emitPool;
-    // Temporarily trim to active count for the spark system
-    const savedLen = emitPoints.length;
-    emitPoints.length = epIdx;
-
-    // 4 efficient work lights: headlight, front grind, rear grind, tail
-    const lightOffsets = [-42, -6, 18, 67];
-    for (let li = 0; li < this.grindLights.length; li++) {
-      const ld = Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition + lightOffsets[li]));
-      const ltp = this.track.getTrackPoint(ld);
-      this.grindLights[li].position.copy(ltp.position);
-      this.grindLights[li].position.y += 2.5;
-      this.grindLights[li].intensity = li === 0 ? 4 : (avgPressure / 50) * (1.5 + Math.random());
-    }
-
-    this.sparkSystem.setEmitPoints(emitPoints, avgPressure / 50);
-    emitPoints.length = savedLen; // restore pool size
-    this.grinder.setGrinding(true);
-
-    // Contact glow at the center of the grinding section
-    const grindCenterDist = Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition + 6));
-    const tp = this.track.getTrackPoint(grindCenterDist);
-    this.grindContact.setActive(tp.position, avgPressure);
-    this.camera.setShake(0.01 + (avgPressure / 100) * 0.02);
-    if (this.audioReady) this.audio.startGrinding(avgPressure / 80);
-
-    eventBus.emit('grind-contact', { sectionIndex });
   }
 
   private completeSegment(sectionIndex: number, accuracy: number): void {
@@ -882,13 +796,10 @@ export class Game {
     this.segmentSlowOrder[sectionIndex] = false;
     this.consecutiveCompleted++;
 
-    // Star rating factors in efficiency (fewer passes = better)
-    const passes = this.segmentPasses[sectionIndex] || 1;
-    const damage = this.segmentDamage[sectionIndex] || 0;
-    const efficiency = accuracy / (1 + passes * 0.12 + damage * 0.05);
-    const stars = efficiency > 0.8 ? 3 : efficiency > 0.6 ? 2 : 1;
+    // Star rating: accuracy, minus penalties for extra passes and over-grind damage
+    const stars = sectionStars(accuracy, this.segmentPasses[sectionIndex] || 0, this.segmentDamage[sectionIndex] || 0);
     // Track restored: each section is ~20m = 65ft of rail returned to full speed
-    const sectionFt = Math.round((this.trackLength / this.sectionCount) * 3.281);
+    const sectionFt = Math.round(GAME_SECTION_LENGTH * 3.281); // metres → feet
     this.trackRestoredFt += sectionFt;
 
     // Flash all visual segments in this section and show them fully polished
@@ -1000,6 +911,13 @@ export class Game {
     if (this.audioReady) this.audio.playSegmentComplete();
     // Job's done — no more revenue trains
     this.deadline.cancel();
+    // Hide the gameplay HUD for the cinematic (restored when a job starts / menu opens)
+    this.setCinematic(true);
+  }
+
+  /** Toggle the HUD-free cinematic look (CSS: body.cinematic in index.html) */
+  private setCinematic(on: boolean): void {
+    document.body.classList.toggle('cinematic', on);
   }
 
   private handleInspectionPass(dt: number): void {
@@ -1027,7 +945,7 @@ export class Game {
     }
 
     // End after passing through the section area
-    const secEnd = this.track.sectionOffset + this.sectionCount * 20 + 30;
+    const secEnd = this.track.sectionOffset + this.sectionCount * GAME_SECTION_LENGTH + 30;
     if (this.grinderPosition > secEnd) {
       this.inspectionPass = false;
       setTimeout(() => this.showCompletionReport(), 500);
@@ -1036,13 +954,17 @@ export class Game {
 
   private showCompletionReport(): void {
     const postJobReport = this.inspectionReport.computeJobReport(this.track, this.targetProfile);
-    const elapsed = (Date.now() - this.startTime) / 1000;
+    const elapsed = this.playTime; // excludes time spent paused
     const completedCount = this.segmentCompleted.filter(c => c).length;
 
     const rqiAfter = postJobReport.overallRQI;
-    const baseStars = rqiAfter >= 95 ? 5 : rqiAfter >= 85 ? 4 : rqiAfter >= 75 ? 3 : rqiAfter >= 60 ? 2 : 1;
-    // Each delayed revenue train costs a star (never below 1)
-    const stars = Math.max(1, baseStars - this.deadline.missedWindows);
+    // RQI-based stars, minus one per delayed revenue train (never below 1)
+    const stars = jobStars(rqiAfter, this.deadline.missedWindows);
+
+    // Save personal best for this job (in the browser's localStorage)
+    const { newBest } = this.currentJob
+      ? recordResult(this.currentJob.id, { stars, rqi: rqiAfter, time: elapsed })
+      : { newBest: false };
 
     this.inspectionReport.showCompletionReport({
       ...postJobReport,
@@ -1054,6 +976,7 @@ export class Game {
       rqiBefore: this.preJobRQI,
       rqiAfter,
       missedWindows: this.deadline.missedWindows,
+      newBest,
     }).then(() => {
       // Return to job select for next contract
       this.startJobSelect();
@@ -1073,6 +996,7 @@ export class Game {
     }
     this.isPaused = false;
     this.pauseMenu.style.display = 'none';
+    this.setCinematic(false);
     this.jobSelect.show().then((job) => {
       this.currentJob = job;
       this.rebuildForJob(job);
@@ -1126,7 +1050,7 @@ export class Game {
     this.assignSlowOrders();
     this.initialSectionAccuracy = [];
     for (let sec = 0; sec < this.sectionCount; sec++) {
-      this.initialSectionAccuracy.push(this.getSectionMeanAccuracy(sec));
+      this.initialSectionAccuracy.push(sectionMeanAccuracy(this.track, this.targetProfile, sec));
     }
 
     // New environment
@@ -1151,33 +1075,6 @@ export class Game {
     this.updateTrackMapDefects();
   }
 
-  /** Average "within tolerance" fraction across a section's visual segments, both rails */
-  private getSectionMeanAccuracy(sec: number): number {
-    let total = 0;
-    let count = 0;
-    for (const vi of this.track.getSegmentsForSection(sec)) {
-      for (const rail of ['left', 'right'] as const) {
-        total += this.track.getProfile(vi, rail).compare(this.targetProfile).withinTolerance;
-        count++;
-      }
-    }
-    return count > 0 ? total / count : 1;
-  }
-
-  /**
-   * How far a section is from "done", 0..1, based on accuracy rather than time.
-   * Uses the section's AVERAGE accuracy so the bar moves as you fix each stretch
-   * (completion itself uses the WORST stretch — see getSectionAccuracy).
-   * 0 = as bad as at job start; capped at 0.95 until the section actually completes.
-   */
-  private getSectionProgress(sec: number): number {
-    if (this.segmentCompleted[sec]) return 1;
-    const start = this.initialSectionAccuracy[sec] ?? 0;
-    const now = this.getSectionMeanAccuracy(sec);
-    if (start >= 0.8) return now >= 0.8 ? 0.95 : 0;
-    return Math.max(0, Math.min(0.95, (now - start) / (0.8 - start)));
-  }
-
   /** Tear down current job and rebuild for a new one */
   private rebuildForJob(job: JobDefinition): void {
     // Freeze gameplay until startGame() runs (the pre-job report may be showing)
@@ -1186,6 +1083,7 @@ export class Game {
     this.inspectionPass = false;
     this.isPaused = false;
     this.pauseMenu.style.display = 'none';
+    this.setCinematic(false);
 
     // Clear any revenue-train countdown (and missed-window count) from the previous attempt
     this.deadline.reset();
@@ -1193,8 +1091,7 @@ export class Game {
     // Stop grinding effects that may still be running
     this.isGrinding = false;
     this.grinder.setGrinding(false);
-    this.sparkSystem.stopEmitting();
-    this.grindContact.setInactive();
+    this.grindEffects.stop();
     if (this.audioReady) this.audio.stopGrinding();
 
     this.buildWorld(job);
@@ -1206,7 +1103,7 @@ export class Game {
     const startGame = () => {
       this.gameStarted = true;
       this.jobComplete = false;
-      this.startTime = Date.now();
+      this.playTime = 0;
       this.deadline.reset();
     };
 

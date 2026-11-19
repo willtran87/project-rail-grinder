@@ -7,15 +7,11 @@
 
 import { RailProfile } from './RailProfile';
 import type { TargetProfile } from '../types/rail';
+import { getPalette } from '../ui/palette';
 
 const PADDING = 30;
 const LABEL_COLOR = '#888';
 const GRID_COLOR = 'rgba(255, 255, 255, 0.08)';
-const CURRENT_COLOR = '#ff4444';
-const TARGET_COLOR = '#44ff44';
-const WITHIN_TOLERANCE_COLOR = '#44ff44';
-const CLOSE_COLOR = '#ffaa00';
-const OVER_GROUND_COLOR = '#ff0066';
 const CONTACT_COLOR = '#ff8800';
 
 export class ProfileRenderer {
@@ -125,7 +121,7 @@ export class ProfileRenderer {
 
     // Draw target profile
     if (target) {
-      ctx.strokeStyle = TARGET_COLOR;
+      ctx.strokeStyle = getPalette().target;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -206,7 +202,7 @@ export class ProfileRenderer {
     if (target) {
       this.drawColorCodedProfile(ctx, current, target, toCanvasX, toCanvasY);
     } else {
-      ctx.strokeStyle = CURRENT_COLOR;
+      ctx.strokeStyle = getPalette().bad;
       ctx.lineWidth = 2;
       ctx.beginPath();
       for (let i = 0; i < current.points.length; i++) {
@@ -234,7 +230,7 @@ export class ProfileRenderer {
       // Text label only on the single worst zone (zones are sorted worst-first);
       // the rest get just the pulsing dot, so labels never pile up
       if (zi === 0) {
-        ctx.fillStyle = isOverground ? '#ff0066' : '#ff5500';
+        ctx.fillStyle = isOverground ? getPalette().over : getPalette().bad;
         ctx.font = '8px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(isOverground ? 'OVER!' : 'GRIND', zx, toCanvasY(minY) + 14);
@@ -387,13 +383,13 @@ export class ProfileRenderer {
       const dev = Math.abs(deviation.pointDeviations[i]);
       let color: string;
       if (dev <= target.tolerance) {
-        color = WITHIN_TOLERANCE_COLOR;
+        color = getPalette().good;
       } else if (dev <= target.tolerance * 3) {
-        color = CLOSE_COLOR;
+        color = getPalette().close;
       } else if (deviation.pointDeviations[i] < 0) {
-        color = OVER_GROUND_COLOR;
+        color = getPalette().over;
       } else {
-        color = CURRENT_COLOR;
+        color = getPalette().bad;
       }
 
       ctx.strokeStyle = color;
@@ -435,11 +431,11 @@ export class ProfileRenderer {
     };
 
     if (target) {
-      drawLegend(TARGET_COLOR, 'Target');
-      drawLegend(WITHIN_TOLERANCE_COLOR, 'Good');
-      drawLegend(CLOSE_COLOR, 'Close');
-      drawLegend(CURRENT_COLOR, 'Grind');
-      drawLegend(OVER_GROUND_COLOR, 'Over!');
+      drawLegend(getPalette().target, 'Target');
+      drawLegend(getPalette().good, 'Good');
+      drawLegend(getPalette().close, 'Close');
+      drawLegend(getPalette().bad, 'Grind');
+      drawLegend(getPalette().over, 'Over!');
       if (this.stoneVisible) {
         drawLegend(CONTACT_COLOR, this.stoneGrinding ? 'Active' : 'Aim');
       }

@@ -14,8 +14,8 @@ import { RailProfile } from './RailProfile';
 import { RailSegment } from './RailSegment';
 
 const GAUGE_WIDTH = 1.6;
-const VISUAL_SEGMENT_LENGTH = 5; // must match RailSegment.SEGMENT_LENGTH
-const GAME_SECTION_LENGTH = 20;  // gameplay sections (scoring, defects)
+export const VISUAL_SEGMENT_LENGTH = 5; // must match RailSegment.SEGMENT_LENGTH
+export const GAME_SECTION_LENGTH = 20;  // gameplay sections (scoring, defects)
 const TIE_SPACING = 0.6;
 
 export interface TrackPoint {
