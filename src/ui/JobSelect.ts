@@ -16,7 +16,6 @@ export interface JobDefinition {
   difficultyColor: string;
   trackLength: string;
   sections: number;
-  defectMultiplier: number;
   defectSeverity: number;   // 0-1 base severity
   timeOfDay: number;        // 0=dawn 1=day 2=dusk 3=night
   trackPoints: THREE.Vector3[];
@@ -32,7 +31,6 @@ export const JOBS: JobDefinition[] = [
     difficultyColor: '#44cc44',
     trackLength: '280m',
     sections: 14,
-    defectMultiplier: 1.0,
     defectSeverity: 0.55,
     timeOfDay: 1,
     trackPoints: [
@@ -61,7 +59,6 @@ export const JOBS: JobDefinition[] = [
     difficultyColor: '#ccaa22',
     trackLength: '380m',
     sections: 18,
-    defectMultiplier: 1.5,
     defectSeverity: 0.7,
     timeOfDay: 2,
     trackPoints: [
@@ -100,7 +97,6 @@ export const JOBS: JobDefinition[] = [
     difficultyColor: '#dd6622',
     trackLength: '300m',
     sections: 15,
-    defectMultiplier: 2.0,
     defectSeverity: 0.9,
     timeOfDay: 3,
     trackPoints: [
@@ -134,7 +130,6 @@ export const JOBS: JobDefinition[] = [
     difficultyColor: '#dd2244',
     trackLength: '420m',
     sections: 21,
-    defectMultiplier: 2.5,
     defectSeverity: 1.0,
     timeOfDay: 0,
     trackPoints: [

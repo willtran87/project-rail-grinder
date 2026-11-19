@@ -220,7 +220,8 @@ export class ProfileRenderer {
 
     // Draw pulsing highlights on worst deviation zones
     this.pulsePhase += 0.08;
-    for (const zone of this.worstZones) {
+    for (let zi = 0; zi < this.worstZones.length; zi++) {
+      const zone = this.worstZones[zi];
       const zx = toCanvasX(zone.centerX);
       const pulse = 0.3 + Math.sin(this.pulsePhase * 3) * 0.2;
       const isOverground = zone.severity < 0;
@@ -230,11 +231,14 @@ export class ProfileRenderer {
       ctx.beginPath();
       ctx.arc(zx, toCanvasY(0), 6, 0, Math.PI * 2);
       ctx.fill();
-      // Arrow pointing to the zone
-      ctx.fillStyle = isOverground ? '#ff0066' : '#ff5500';
-      ctx.font = '8px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(isOverground ? 'OVER!' : 'GRIND', zx, toCanvasY(minY) + 14);
+      // Text label only on the single worst zone (zones are sorted worst-first);
+      // the rest get just the pulsing dot, so labels never pile up
+      if (zi === 0) {
+        ctx.fillStyle = isOverground ? '#ff0066' : '#ff5500';
+        ctx.font = '8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(isOverground ? 'OVER!' : 'GRIND', zx, toCanvasY(minY) + 14);
+      }
     }
 
     // Border flash on over-grind
@@ -346,7 +350,10 @@ export class ProfileRenderer {
       ctx.fillText(`${x}`, cx, this.canvas.height - PADDING + 12);
     }
 
-    const yStep = (maxY - minY) > 5 ? 1 : 0.5;
+    // Pick the smallest "nice" step that keeps labels at least 16px apart,
+    // so they never stack on top of each other on a short panel.
+    const pxPerMm = Math.abs(toCanvasY(maxY) - toCanvasY(minY)) / (maxY - minY);
+    const yStep = [0.5, 1, 2, 5, 10, 20].find(s => s * pxPerMm >= 16) ?? 20;
     for (let y = Math.ceil(minY / yStep) * yStep; y <= maxY; y += yStep) {
       const cy = toCanvasY(y);
       ctx.beginPath();
@@ -354,7 +361,7 @@ export class ProfileRenderer {
       ctx.lineTo(this.canvas.width - PADDING, cy);
       ctx.stroke();
       ctx.textAlign = 'left';
-      ctx.fillText(`${y.toFixed(1)}`, 2, cy + 3);
+      ctx.fillText(y.toFixed(yStep < 1 ? 1 : 0), 2, cy + 3);
     }
 
     // Axis labels
@@ -440,6 +447,7 @@ export class ProfileRenderer {
 
     ctx.fillStyle = LABEL_COLOR;
     ctx.font = '9px monospace';
+    ctx.textAlign = 'left'; // the legend may have left this as 'right' (right rail)
     ctx.fillText(`Metal: ${current.metalRemoved.toFixed(2)}mm`, PADDING, 13);
     if (this.passCount > 0) {
       ctx.fillText(`Pass: ${this.passCount}`, PADDING + 110, 13);

@@ -10,15 +10,18 @@ src/
 │   ├── Engine.ts            # Three.js renderer, scene, camera, pixel-art pipeline
 │   ├── InputManager.ts      # Keyboard and mouse state tracking
 │   ├── EventBus.ts          # Simple pub/sub for decoupled communication
+│   ├── CameraController.ts  # Camera views (1-5), screen shake, inspection cinematic
 │   └── dispose.ts           # Frees GPU memory of discarded scene objects
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
 │   ├── RailSegment.ts       # 3D mesh extruded from a profile, with visual state
 │   ├── RailTrack.ts         # Curved spline track with segments, ties, ballast
+│   ├── *.test.ts            # Unit tests for profile math and section layout (npm test)
 │   └── ProfileRenderer.ts   # 2D canvas overlay drawing the profile curves
 ├── world/
 │   ├── RailGrinder.ts       # 9-car grinding consist with detailed geometry
 │   ├── PassingTrain.ts      # Freight train on adjacent track + InstancedMesh track
+│   ├── RevenueTrainDeadline.ts # Revenue-train countdown + missed-window penalty
 │   ├── Environment.ts       # Trees, rocks, grass, terrain, mountains, stars
 │   ├── DayNightCycle.ts     # Time-of-day lighting with color palettes
 │   ├── Weather.ts           # Rain particle system
@@ -117,8 +120,7 @@ Edit `src/ui/JobSelect.ts` and add an entry to the `JOBS` array:
   difficultyColor: '#ccaa22',
   trackLength: '300m',
   sections: 15,
-  defectMultiplier: 0.7,    // 0-1, scales defect severity
-  defectSeverity: 0.7,
+  defectSeverity: 0.7,       // 0-1, scales defect depth (Easy 0.55 … Expert 1.0)
   timeOfDay: 1,              // 0=dawn, 1=day, 2=dusk, 3=night
   trackPoints: [
     new THREE.Vector3(x, 0, z),  // control points for CatmullRom spline

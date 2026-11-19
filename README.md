@@ -78,6 +78,7 @@ No external model files, textures, or audio files. Everything is generated at ru
 ```bash
 npm run build    # production build to dist/
 npm run preview  # preview the production build
+npm test         # run unit tests (Vitest)
 ```
 
 ## License

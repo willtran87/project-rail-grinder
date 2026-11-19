@@ -198,9 +198,18 @@ export class RailProfile {
       }
     }
 
-    // Sort by absolute severity and return top N
+    // Sort by absolute severity, then keep only zones that are well apart:
+    // two peaks a few mm apart are really one defect (and their labels would overlap)
     zones.sort((a, b) => Math.abs(b.severity) - Math.abs(a.severity));
-    return zones.slice(0, count);
+    const MIN_SEPARATION = 8; // mm
+    const picked: Array<{ centerX: number; severity: number }> = [];
+    for (const zone of zones) {
+      if (picked.every(p => Math.abs(p.centerX - zone.centerX) >= MIN_SEPARATION)) {
+        picked.push(zone);
+        if (picked.length >= count) break;
+      }
+    }
+    return picked;
   }
 
   /** Get the deviation at a specific x position relative to a target */

@@ -163,6 +163,46 @@ export class AudioManager {
     });
   }
 
+  /**
+   * Play a two-blast locomotive air horn (revenue train approaching).
+   * Real US horns are a chord of several reed tones — we layer three
+   * sawtooth oscillators through a lowpass filter for a brassy sound.
+   * Deliberately different from the over-grind buzzer so the two warnings
+   * can't be confused.
+   */
+  playTrainHorn(): void {
+    if (!this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1400;
+    filter.connect(this.masterGain);
+
+    // Two blasts: long, short
+    const blasts = [{ start: 0, length: 1.1 }, { start: 1.35, length: 0.6 }];
+    for (const blast of blasts) {
+      const t0 = now + blast.start;
+      const t1 = t0 + blast.length;
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.09, t0 + 0.06);   // quick swell
+      gain.gain.setValueAtTime(0.09, t1 - 0.1);
+      gain.gain.linearRampToValueAtTime(0, t1);             // quick release
+      gain.connect(filter);
+
+      for (const freq of [277, 349, 415]) { // C#4, F4, G#4 — classic horn chord
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq * 0.97, t0);       // slight pitch rise as air builds
+        osc.frequency.linearRampToValueAtTime(freq, t0 + 0.12);
+        osc.connect(gain);
+        osc.start(t0);
+        osc.stop(t1 + 0.05);
+      }
+    }
+  }
+
   /** Play harsh buzzer for over-grinding */
   playOvergrindAlarm(): void {
     if (!this.ctx || !this.masterGain) return;
