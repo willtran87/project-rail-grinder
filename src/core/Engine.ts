@@ -71,6 +71,19 @@ export class Engine {
 
   /** Glow around anything brighter than white (sparks, sun, lights). Tuned per time of day. */
   readonly bloom: UnrealBloomPass;
+  /** Height of the low-res render target in pixels (for point-sprite sizing) */
+  get renderHeight(): number { return this.renderTarget.height; }
+
+  private pendingCapture: ((blob: Blob | null) => void) | null = null;
+
+  /**
+   * Grab the next finished frame as a PNG. (WebGL clears the canvas after
+   * each frame, so we read it immediately after drawing, inside animate().)
+   */
+  captureFrame(): Promise<Blob | null> {
+    return new Promise((resolve) => { this.pendingCapture = resolve; });
+  }
+
   /** Turn bloom off on slow machines (a future graphics-quality setting) */
   bloomEnabled = true;
   /** Colour grade uniforms. Tuned per time of day by DayNightCycle. */
@@ -223,6 +236,13 @@ export class Engine {
     this.renderer.setRenderTarget(null);
     this.renderer.clear();
     this.renderer.render(this.pixelQuadScene, this.pixelQuadCamera);
+
+    // Screenshot requested? Read the canvas now, while this frame is still in it
+    if (this.pendingCapture) {
+      const resolve = this.pendingCapture;
+      this.pendingCapture = null;
+      this.renderer.domElement.toBlob(resolve, 'image/png');
+    }
   }
 
   private onResize(): void {

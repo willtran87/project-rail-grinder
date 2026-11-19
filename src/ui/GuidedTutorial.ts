@@ -28,6 +28,7 @@ export class GuidedTutorial {
 
   constructor() {
     this.overlay = document.createElement('div');
+    this.overlay.id = 'guided-tutorial';
     this.overlay.style.cssText = `
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       pointer-events: none; z-index: 12;

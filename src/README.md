@@ -32,12 +32,14 @@ src/
 │   ├── DayNightCycle.ts     # Time-of-day presets: sky, fog, light, colour grade, bloom
 │   ├── SkyDome.ts           # Gradient sky shader with sun/moon and stars
 │   ├── GroundMist.ts        # Drifting low haze, clear near the grinder
+│   ├── Ocean.ts             # Coast job: wave shader sea + beach following the track
 │   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
 │   ├── Weather.ts           # Rain particle system
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
-│   ├── GrindEffects.ts      # Sparks + work lights + contact glow, driven per frame
-│   ├── SparkSystem.ts       # Grinding spark particles (500+, color gradient)
+│   ├── GrindEffects.ts      # Sparks + dust + work lights + contact glow, per frame
+│   ├── DustSystem.ts        # Billowing grinding-dust puffs (custom point shader)
+│   ├── SparkSystem.ts       # Grinding sparks drawn as glowing streaks (800 max)
 │   └── GrindContact.ts      # Glowing contact point and ground trail
 ├── audio/
 │   └── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
@@ -47,6 +49,7 @@ src/
 │   ├── FloatingScore.ts     # Animated floating text popups
 │   ├── palette.ts           # Status colours + colour-blind palette (key C)
 │   ├── PerfOverlay.ts       # FPS / frame-time counter (backtick key)
+│   ├── PhotoMode.ts         # Free orbit camera, hidden HUD, save PNG (key F)
 │   ├── RadioDispatch.ts     # Periodic dispatch messages
 │   ├── InspectionReport.ts  # Pre/post job reports with RQI
 │   ├── JobSelect.ts         # Job selection screen with US map

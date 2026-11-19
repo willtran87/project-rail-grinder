@@ -10,17 +10,32 @@ import * as THREE from 'three';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
 
+export interface EnvironmentOptions {
+  /**
+   * Keep one side of the track free of scenery (e.g. for an ocean).
+   * side: -1 = the track's left (−x on a northbound track), 1 = right.
+   * beyond: metres from the track centre where the clear zone starts.
+   */
+  clearSide?: { side: -1 | 1; beyond: number };
+}
+
 export class Environment {
   readonly group: THREE.Group;
   private track: RailTrack | null = null;
+  private options: EnvironmentOptions;
 
   /** Pre-computed occupancy grid — avoids 101 spline samples per isOnTrack() call */
   private occupancyGrid: Set<string> | null = null;
   private static readonly GRID_CELL = 2; // meters per cell
 
-  constructor(track?: RailTrack) {
+  /** Track centre x sampled every 2m of z, so scenery can follow any route */
+  private centerLookup: { z: number; x: number }[] = [];
+
+  constructor(track?: RailTrack, options: EnvironmentOptions = {}) {
     this.group = new THREE.Group();
     this.track = track ?? null;
+    this.options = options;
+    this.buildCenterLookup();
     this.buildOccupancyGrid();
     this.addTerrain();
     this.addTracksideGroundCover();
@@ -34,11 +49,40 @@ export class Environment {
     // (stars now come from the SkyDome shader, which fades them in only at night)
   }
 
+  /**
+   * Sample the real track so trackCenterX() follows whichever route this job
+   * uses. (All routes head generally +z, so z → x is a simple lookup.)
+   */
+  private buildCenterLookup(): void {
+    if (!this.track) return;
+    for (let d = 0; d < this.track.totalLength; d += 2) {
+      const p = this.track.getTrackPoint(d).position;
+      this.centerLookup.push({ z: p.z, x: p.x });
+    }
+  }
+
+  /** x of the track centre line at a given z (interpolated) */
   private trackCenterX(z: number): number {
-    if (z < 80) return 0;
-    if (z < 215) return ((z - 80) / 135) * 55;
-    if (z < 340) return 55 - ((z - 215) / 125) * 20;
-    return 35;
+    const t = this.centerLookup;
+    if (t.length === 0) return 0;
+    if (z <= t[0].z) return t[0].x;
+    if (z >= t[t.length - 1].z) return t[t.length - 1].x;
+    // Binary search for the samples either side of z
+    let lo = 0, hi = t.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (t[mid].z <= z) lo = mid; else hi = mid;
+    }
+    const k = (z - t[lo].z) / Math.max(1e-6, t[hi].z - t[lo].z);
+    return t[lo].x + (t[hi].x - t[lo].x) * k;
+  }
+
+  /** Is (x, z) inside the side that must stay clear (e.g. the ocean)? */
+  private isInClearZone(x: number, z: number): boolean {
+    const clear = this.options.clearSide;
+    if (!clear) return false;
+    // On a northbound (+z) track, the track's right is +x, so side -1 is −x
+    return (x - this.trackCenterX(z)) * clear.side > clear.beyond;
   }
 
   /** Build a grid of cells occupied by the track for O(1) collision checks */
@@ -70,7 +114,9 @@ export class Environment {
     this.occupancyGrid = grid;
   }
 
+  /** True if scenery can't go here: on/near a track, or in the clear zone (ocean) */
   private isOnTrack(x: number, z: number): boolean {
+    if (this.isInClearZone(x, z)) return true;
     if (!this.track) return Math.abs(x - this.trackCenterX(z)) < 8;
     if (this.occupancyGrid) {
       const cell = Environment.GRID_CELL;
@@ -391,9 +437,12 @@ export class Environment {
       const mat = new THREE.MeshStandardMaterial({ color: layer.color, fog: true });
       for (let i = 0; i < layer.count; i++) {
         const side = i % 2 === 0 ? -1 : 1;
+        // No mountains on the clear side (open ocean horizon on the coast job)
+        if (this.options.clearSide && side === this.options.clearSide.side) continue;
         const w = this.rand(35, 70), h = layer.height * (0.5 + Math.random() * 0.5);
         const mt = new THREE.Mesh(new THREE.ConeGeometry(w, h, 5 + Math.floor(Math.random() * 3)), mat);
-        mt.position.set(side * layer.dist + this.rand(-20, 50), h / 2 - 8, (i / layer.count) * 420 - 30);
+        const z = (i / layer.count) * 420 - 30;
+        mt.position.set(this.trackCenterX(z) + side * layer.dist + this.rand(-20, 50), h / 2 - 8, z);
         mt.rotation.y = Math.random() * Math.PI;
         this.group.add(mt);
       }

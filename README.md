@@ -31,6 +31,7 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | M | Mute audio |
 | C | Toggle colour-blind palette (remembered) |
 | `` ` `` (backtick) | Toggle FPS / frame-time counter |
+| F | Photo mode: drag or arrows to orbit, wheel or W/S to zoom, A/D to slide along the track, K to save a PNG, F or ESC to exit |
 | ESC | Pause menu (resume, restart, quit, controls list) |
 | R | Restart current job |
 

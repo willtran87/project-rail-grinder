@@ -11,6 +11,10 @@ import * as THREE from 'three';
 const MAX_SPARKS = 800;
 const GRAVITY = -9.8;
 const SPARK_LIFETIME = 1.2;
+/** Streak length: the tail trails this many seconds of travel behind the head */
+const TRAIL_SECONDS = 0.035;
+/** New sparks are brighter than white so the bloom pass makes them glow */
+const HEAT_GLOW = 2.4;
 
 interface Spark {
   position: THREE.Vector3;
@@ -27,7 +31,11 @@ export interface EmitPoint {
 }
 
 export class SparkSystem {
-  readonly points: THREE.Points;
+  /**
+   * Sparks are drawn as short line streaks (head → tail along the direction
+   * of travel), 2 vertices each: a bright hot head and a dim fading tail.
+   */
+  readonly streaks: THREE.LineSegments;
   private sparks: Spark[] = [];
   private positions: Float32Array;
   private colors: Float32Array;
@@ -41,8 +49,9 @@ export class SparkSystem {
   private intensity = 1;
 
   constructor() {
-    this.positions = new Float32Array(MAX_SPARKS * 3);
-    this.colors = new Float32Array(MAX_SPARKS * 3);
+    // 2 vertices (head + tail) per spark
+    this.positions = new Float32Array(MAX_SPARKS * 6);
+    this.colors = new Float32Array(MAX_SPARKS * 6);
 
     for (let i = 0; i < MAX_SPARKS; i++) {
       this.sparks.push({
@@ -52,26 +61,24 @@ export class SparkSystem {
         maxAge: SPARK_LIFETIME,
         alive: false,
       });
-      // Hide all initially
-      this.positions[i * 3 + 1] = -100;
+      // Hide all initially (park both ends below the ground)
+      this.positions[i * 6 + 1] = -100;
+      this.positions[i * 6 + 4] = -100;
     }
 
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
     this.geometry.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
 
-    const material = new THREE.PointsMaterial({
-      size: 3,
-      sizeAttenuation: false,
+    const material = new THREE.LineBasicMaterial({
       vertexColors: true,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.AdditiveBlending, // overlapping sparks add up to white-hot
       transparent: true,
-      opacity: 0.95,
       depthWrite: false,
     });
 
-    this.points = new THREE.Points(this.geometry, material);
-    this.points.frustumCulled = false;
+    this.streaks = new THREE.LineSegments(this.geometry, material);
+    this.streaks.frustumCulled = false;
 
     this.sparkLight = new THREE.PointLight(0xff8833, 0, 15);
   }
@@ -106,8 +113,10 @@ export class SparkSystem {
     // Update existing sparks
     for (let i = 0; i < MAX_SPARKS; i++) {
       const spark = this.sparks[i];
+      const v = i * 6; // head vertex at v, tail vertex at v + 3
       if (!spark.alive) {
-        this.positions[i * 3 + 1] = -100;
+        this.positions[v + 1] = -100;
+        this.positions[v + 4] = -100;
         continue;
       }
 
@@ -145,13 +154,22 @@ export class SparkSystem {
         r = 1.0 - s * 0.6; g = 0.2 - s * 0.2; b = 0.05;
       }
 
-      this.colors[i * 3] = r;
-      this.colors[i * 3 + 1] = g;
-      this.colors[i * 3 + 2] = b;
+      // Head: hot (brighter than white early on → bloom), cooling with age
+      const heat = 1 + (HEAT_GLOW - 1) * (1 - t);
+      this.colors[v] = r * heat;
+      this.colors[v + 1] = g * heat;
+      this.colors[v + 2] = b * heat;
+      // Tail: same hue, much dimmer, so each streak fades out behind
+      this.colors[v + 3] = r * 0.12;
+      this.colors[v + 4] = g * 0.12;
+      this.colors[v + 5] = b * 0.12;
 
-      this.positions[i * 3] = spark.position.x;
-      this.positions[i * 3 + 1] = spark.position.y;
-      this.positions[i * 3 + 2] = spark.position.z;
+      this.positions[v] = spark.position.x;
+      this.positions[v + 1] = spark.position.y;
+      this.positions[v + 2] = spark.position.z;
+      this.positions[v + 3] = spark.position.x - spark.velocity.x * TRAIL_SECONDS;
+      this.positions[v + 4] = spark.position.y - spark.velocity.y * TRAIL_SECONDS;
+      this.positions[v + 5] = spark.position.z - spark.velocity.z * TRAIL_SECONDS;
     }
 
     this.geometry.attributes.position.needsUpdate = true;
@@ -222,6 +240,6 @@ export class SparkSystem {
 
   dispose(): void {
     this.geometry.dispose();
-    (this.points.material as THREE.Material).dispose();
+    (this.streaks.material as THREE.Material).dispose();
   }
 }

@@ -20,6 +20,8 @@ export interface JobDefinition {
   defectSeverity: number;   // 0-1 base severity
   timeOfDay: number;        // 0=dawn 1=day 2=dusk 3=night
   trackPoints: THREE.Vector3[];
+  /** Special scenery for this route ('coast' = ocean + beach on the west side) */
+  scenery?: 'coast';
 }
 
 export const JOBS: JobDefinition[] = [
@@ -133,6 +135,7 @@ export const JOBS: JobDefinition[] = [
     sections: 21,
     defectSeverity: 1.0,
     timeOfDay: 0,
+    scenery: 'coast',
     trackPoints: [
       // Winding coastal route following the shoreline
       new THREE.Vector3(0, 0, -10),

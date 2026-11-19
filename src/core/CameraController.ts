@@ -107,6 +107,40 @@ export class CameraController {
     this.camera.lookAt(this.smoothTarget);
   }
 
+  // ---- Photo mode: free orbit around a point ----
+  private orbitYaw = 0;
+  private orbitPitch = 0.3;
+  private orbitDist = 18;
+
+  /** Start orbiting from wherever the camera is now, so entering photo mode doesn't jump */
+  beginOrbit(target: THREE.Vector3): void {
+    const offset = this._pos.copy(this.camera.position).sub(target);
+    this.orbitDist = THREE.MathUtils.clamp(offset.length(), 3, 80);
+    this.orbitPitch = THREE.MathUtils.clamp(Math.asin(offset.y / Math.max(0.001, offset.length())), 0.03, 1.45);
+    this.orbitYaw = Math.atan2(offset.x, offset.z);
+  }
+
+  /**
+   * Orbit camera for photo mode.
+   * @param yawDelta / pitchDelta - radians to rotate this frame
+   * @param zoomFactor - multiply distance (>1 = further away)
+   */
+  updateOrbit(target: THREE.Vector3, yawDelta: number, pitchDelta: number, zoomFactor: number): void {
+    this.orbitYaw += yawDelta;
+    this.orbitPitch = THREE.MathUtils.clamp(this.orbitPitch + pitchDelta, 0.03, 1.45);
+    this.orbitDist = THREE.MathUtils.clamp(this.orbitDist * zoomFactor, 3, 80);
+    const cp = Math.cos(this.orbitPitch);
+    this.camera.position.set(
+      target.x + Math.sin(this.orbitYaw) * cp * this.orbitDist,
+      target.y + Math.sin(this.orbitPitch) * this.orbitDist,
+      target.z + Math.cos(this.orbitYaw) * cp * this.orbitDist,
+    );
+    this.camera.lookAt(target);
+    // Keep gameplay smoothing in sync so leaving photo mode glides back
+    this.smoothPos.copy(this.camera.position);
+    this.smoothTarget.copy(target);
+  }
+
   /** Cinematic camera for the inspection pass: a slow low orbit around the grinder */
   updateInspection(track: RailTrack, grinderPosition: number, timer: number): void {
     const len = track.totalLength;

@@ -44,6 +44,16 @@
       body.cinematic #radio-dispatch,
       body.cinematic #deadline-bar { display: none !important; }
 
+      /* ---- Photo mode: hide everything except the scene and the photo hint ---- */
+      body.photo-mode #top-bar,
+      body.photo-mode #profile-container,
+      body.photo-mode #track-map,
+      body.photo-mode #radio-dispatch,
+      body.photo-mode #deadline-bar,
+      body.photo-mode #perf-overlay,
+      body.photo-mode #guided-tutorial,
+      body.photo-mode #floating-scores { display: none !important; }
+
       /* ---- TOP BAR: Speed + Status (compact) ---- */
       #top-bar {
         position: absolute; top: 0; left: 0; right: 0;
@@ -394,6 +404,7 @@
             <div><kbd>M</kbd> mute</div>
             <div><kbd>C</kbd> colour-blind palette</div>
             <div><kbd>`</kbd> FPS counter</div>
+            <div><kbd>F</kbd> photo mode (<kbd>K</kbd> saves)</div>
             <div><kbd>R</kbd> restart job &nbsp; <kbd>ESC</kbd> pause</div>
           </div>
         </div>

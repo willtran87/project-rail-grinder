@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import { SparkSystem } from './SparkSystem';
 import { GrindContact } from './GrindContact';
+import { DustSystem } from './DustSystem';
 import type { RailTrack } from '../rail/RailTrack';
 
 /** Car offsets (m from grinderPosition) of the four grinding cars */
@@ -23,13 +24,19 @@ type EmitPoint = { position: THREE.Vector3; forward: THREE.Vector3; right: THREE
 export class GrindEffects {
   private sparks: SparkSystem;
   private contact: GrindContact;
+  private dust: DustSystem;
+  private _dustOrigin = new THREE.Vector3();
+  private _dustDrift = new THREE.Vector3();
   private lights: THREE.PointLight[] = [];
   // Pre-allocated emit points (avoids creating 96 vectors every frame)
   private emitPool: EmitPoint[] = [];
 
   constructor(scene: THREE.Scene) {
     this.sparks = new SparkSystem();
-    scene.add(this.sparks.points);
+    scene.add(this.sparks.streaks);
+
+    this.dust = new DustSystem();
+    scene.add(this.dust.points);
     scene.add(this.sparks.sparkLight);
 
     this.contact = new GrindContact();
@@ -49,6 +56,7 @@ export class GrindEffects {
   /** Animate particles and glow — call every frame */
   update(dt: number): void {
     this.sparks.update(dt);
+    this.dust.update(dt);
     this.contact.update(dt);
   }
 
@@ -68,6 +76,16 @@ export class GrindEffects {
         }
       }, i * 70);
     }
+  }
+
+  /**
+   * Match the dust to the scene lighting and screen size.
+   * @param light - roughly the colour of the ambient light right now
+   * @param pixelScale - render height / (2·tan(fov/2)), for correct puff sizes
+   */
+  setDustLook(light: THREE.Color, pixelScale: number): void {
+    this.dust.setColor(light);
+    this.dust.setScale(pixelScale);
   }
 
   /** Stop sparks and glow immediately (e.g. on restart) */
@@ -112,6 +130,19 @@ export class GrindEffects {
       }
     }
     this.sparks.setEmitPoints(this.emitPool, avgPressure / 50);
+
+    // Dust: each grinding car occasionally puffs a cloud off each rail.
+    // More pressure = more dust. It lags behind as the consist moves on.
+    const dustChance = 0.25 * (avgPressure / 50);
+    for (let c = 0; c < GRIND_CAR_OFFSETS.length; c++) {
+      if (Math.random() > dustChance) continue;
+      const ep = this.emitPool[c * STONES_PER_CAR + Math.floor(Math.random() * STONES_PER_CAR)];
+      const side = Math.random() < 0.5 ? -1 : 1;
+      this._dustOrigin.copy(ep.position).addScaledVector(ep.right, side * 0.8);
+      this._dustOrigin.y += 0.1;
+      this._dustDrift.copy(ep.forward).multiplyScalar(-0.4).addScaledVector(ep.right, side * 0.5);
+      this.dust.emit(this._dustOrigin, this._dustDrift);
+    }
 
     // Contact glow at the centre of the grinding section
     const centre = track.getTrackPoint(clamp(grinderPosition + 6));

@@ -20,6 +20,7 @@ import { DayNightCycle } from './world/DayNightCycle';
 import { Weather } from './world/Weather';
 import { GrindEffects } from './effects/GrindEffects';
 import { GroundMist } from './world/GroundMist';
+import { Ocean } from './world/Ocean';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
 import { GuidedTutorial } from './ui/GuidedTutorial';
@@ -41,6 +42,7 @@ import {
 import { sectionAccuracy, sectionMeanAccuracy, sectionWorstDeviation } from './game/sectionMetrics';
 import { recordResult } from './game/progress';
 import { PerfOverlay } from './ui/PerfOverlay';
+import { PhotoMode } from './ui/PhotoMode';
 import { toggleColorblindMode } from './ui/palette';
 
 const RAILS = ['left', 'right'] as const;
@@ -52,6 +54,7 @@ export class Game {
   private track!: RailTrack;
   private profileRenderer: ProfileRenderer;
   private environment!: Environment;
+  private ocean: Ocean | null = null; // only on coastal jobs
   private dayNight: DayNightCycle;
   private grindEffects: GrindEffects; // sparks, work lights, contact glow
   private groundMist: GroundMist;
@@ -109,6 +112,8 @@ export class Game {
 
   // Camera views, screen shake, inspection cinematic
   private camera: CameraController;
+  // Free camera, hidden HUD, save PNG (key F)
+  private photoMode: PhotoMode;
 
   // Revenue train countdown + "missed window" penalty
   private deadline: RevenueTrainDeadline;
@@ -163,12 +168,34 @@ export class Game {
     return this._focus.copy(this.track.getTrackPoint(d).position);
   }
   private _focus = new THREE.Vector3();
+  private _dustColor = new THREE.Color();
+
+  /**
+   * Photo mode frame: game logic frozen, but the world keeps living —
+   * sparks fall, dust drifts, sky/weather animate, and N/P still work.
+   */
+  private updatePhotoMode(dt: number): void {
+    const target = this.photoMode.update(dt, this.track);
+    this.updateAtmosphere(dt);
+    this.grindEffects.update(dt);
+    this.weather.update(dt, target);
+    if (this.input.wasKeyPressed('n')) this.dayNight.cycleTime();
+    if (this.input.wasKeyPressed('p')) this.weather.toggle();
+  }
 
   /** Sky, sun, fog, colour grade and ground mist — all follow time of day and the grinder */
   private updateAtmosphere(dt: number): void {
     const focus = this.grinderFocus();
     this.dayNight.update(dt, this.engine.camera, focus);
     this.groundMist.update(dt, focus, this.dayNight.fogColor, this.dayNight.currentName);
+    this.ocean?.update(dt, this.dayNight.sky, this.dayNight.fogColor);
+    // Dust takes on the colour of the air around it: pale tan by day, dim at night
+    const fog = this.dayNight.fogColor;
+    const skyLight = Math.min(1, 0.3 + (fog.r * 0.3 + fog.g * 0.59 + fog.b * 0.11) * 1.3);
+    this._dustColor.setRGB(0.62, 0.56, 0.48).lerp(fog, 0.5).multiplyScalar(skyLight);
+    const cam = this.engine.camera;
+    this.grindEffects.setDustLook(this._dustColor,
+      this.engine.renderHeight / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)));
   }
 
   constructor() {
@@ -248,6 +275,7 @@ export class Game {
 
     // Camera + revenue-train deadline
     this.camera = new CameraController(this.engine.camera);
+    this.photoMode = new PhotoMode(this.engine, this.camera, this.input);
     this.deadline = new RevenueTrainDeadline({
       trackMap: this.trackMap,
       floatingScore: this.floatingScore,
@@ -439,6 +467,20 @@ export class Game {
       // Track map and profile displays read the palette every time they draw
       const on = toggleColorblindMode();
       this.floatingScore.show(on ? 'COLOUR-BLIND PALETTE ON' : 'COLOUR-BLIND PALETTE OFF', '#ffffff');
+    }
+
+    // F toggles photo mode during play; ESC also leaves it
+    const canPhoto = this.gameStarted && !this.jobComplete && !this.inspectionPass && !this.isPaused;
+    if (canPhoto && (this.input.wasKeyPressed('f')
+        || (this.photoMode.active && this.input.wasKeyPressed('escape')))) {
+      this.photoMode.setActive(!this.photoMode.active, this.track, this.grinderPosition);
+      this.input.endFrame();
+      return;
+    }
+    if (this.photoMode.active) {
+      this.updatePhotoMode(dt);
+      this.input.endFrame();
+      return;
     }
 
     // R restarts the current job (only during active play — never from menus)
@@ -727,16 +769,25 @@ export class Game {
 
     // Remove metal from both rails with their individual settings
     const penalty = heatPenalty(this.stoneHeat);
+    const tol = this.targetProfile.tolerance;
+    let onDefect = 0;          // for the audio: how much excess metal is under the stones
+    let overgrinding = false;
     for (const rail of RAILS) {
       const grindX = stoneGrindX(this.stoneAngle[rail]);
       const depth = removalRatePerSec(this.stonePressure[rail]) * penalty * dt;
       const profile = this.track.getProfile(visualSegIndex, rail);
+
+      // Before cutting: is this stone on a defect? (0 = clean rail, 1 = deep defect)
+      const excess = profile.getDeviationAtX(grindX, this.targetProfile) - tol;
+      onDefect += Math.max(0, Math.min(1, excess / 0.08)) / RAILS.length;
+
       profile.removeMetalAt(grindX, stoneContactWidth(this.stonePressure[rail]), depth);
       this.totalMetalRemoved += depth;
 
       // Over-grind: went past the target line at the stone centre
-      if (profile.getDeviationAtX(grindX, this.targetProfile) < -this.targetProfile.tolerance
-          && this.overgrindCooldown <= 0) {
+      const isOver = profile.getDeviationAtX(grindX, this.targetProfile) < -tol;
+      if (isOver) overgrinding = true;
+      if (isOver && this.overgrindCooldown <= 0) {
         this.overgrindCooldown = 1.0;
         if (sectionIndex >= 0) {
           this.segmentDamage[sectionIndex] = Math.max(
@@ -789,7 +840,7 @@ export class Game {
     this.drawProfiles(visualSegIndex, sectionIndex);
 
     this.camera.setShake(0.01 + (avgPressure / 100) * 0.02);
-    if (this.audioReady) this.audio.startGrinding(avgPressure / 80);
+    if (this.audioReady) this.audio.startGrinding(avgPressure / 80, onDefect, overgrinding);
     eventBus.emit('grind-contact', { sectionIndex });
   }
 
@@ -1043,6 +1094,11 @@ export class Game {
       this.engine.scene.remove(this.environment.group);
       disposeObject3D(this.environment.group);
     }
+    if (this.ocean) {
+      this.engine.scene.remove(this.ocean.group);
+      disposeObject3D(this.ocean.group);
+      this.ocean = null;
+    }
     if (this.passingTrain) {
       this.engine.scene.remove(this.passingTrain.group);
       this.engine.scene.remove(this.passingTrain.adjacentTrack);
@@ -1078,9 +1134,15 @@ export class Game {
       this.initialSectionAccuracy.push(sectionMeanAccuracy(this.track, this.targetProfile, sec));
     }
 
-    // New environment
-    this.environment = new Environment(this.track);
+    // New environment (coastal routes keep the west side clear for the sea)
+    const coast = job.scenery === 'coast';
+    this.environment = new Environment(this.track,
+      coast ? { clearSide: { side: -1, beyond: 7 } } : {});
     this.engine.scene.add(this.environment.group);
+    if (coast) {
+      this.ocean = new Ocean(this.track, -1);
+      this.engine.scene.add(this.ocean.group);
+    }
 
     // New passing train
     this.passingTrain = new PassingTrain();
@@ -1109,6 +1171,7 @@ export class Game {
     this.isPaused = false;
     this.pauseMenu.style.display = 'none';
     this.setCinematic(false);
+    if (this.photoMode.active) this.photoMode.setActive(false, this.track, this.grinderPosition);
 
     // Clear any revenue-train countdown (and missed-window count) from the previous attempt
     this.deadline.reset();

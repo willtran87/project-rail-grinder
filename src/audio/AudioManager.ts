@@ -54,11 +54,46 @@ export class AudioManager {
     }
   }
 
-  /** Start or update the grinding sound. grindIntensity 0-1. */
-  startGrinding(grindIntensity: number): void {
-    if (!this.ctx || !this.masterGain) return;
+  // "Sweet spot" layer: a clean metallic singing tone when the stone is on a defect
+  private singNode: OscillatorNode | null = null;
+  private singGain: GainNode | null = null;
+  private grindNoiseFilter: BiquadFilterNode | null = null;
 
-    if (!this.grindNode) {
+  /**
+   * Start or update the grinding sound — it tells you how well you're aiming:
+   *   - on a defect: a bright "singing" tone rises with how much metal is coming off
+   *   - over-grinding: harsh, low scrape (noise opens up, tone drops and wobbles)
+   *   - grinding rail that's already good: dull, quiet rumble
+   * @param grindIntensity 0-1 (pressure)
+   * @param onDefect 0-1, how much excess metal is under the stones
+   * @param overgrinding true if a stone is cutting below the target line
+   */
+  startGrinding(grindIntensity: number, onDefect: number = 0, overgrinding: boolean = false): void {
+    if (!this.ctx || !this.masterGain) return;
+    this.ensureGrindNodes();
+
+    const now = this.ctx.currentTime;
+    const ramp = now + 0.08;
+    // Base metallic tone: pitch climbs when you're on a defect, drops when over-grinding
+    const basePitch = overgrinding ? 85 + Math.random() * 25 : 110 + onDefect * 140 + grindIntensity * 30;
+    this.grindNode!.frequency.linearRampToValueAtTime(basePitch, ramp);
+    this.grindGain!.gain.linearRampToValueAtTime(grindIntensity * (overgrinding ? 0.2 : 0.1 + onDefect * 0.08), ramp);
+
+    // Grit: loud and wide when over-grinding, quieter on good rail
+    this.grindNoiseFilter!.frequency.linearRampToValueAtTime(overgrinding ? 900 : 3000 - onDefect * 800, ramp);
+    this.grindNoiseGain!.gain.linearRampToValueAtTime(grindIntensity * (overgrinding ? 0.2 : 0.05 + onDefect * 0.05), ramp);
+
+    // Sweet-spot sing: only when actually taking metal off a defect
+    const sing = overgrinding ? 0 : onDefect;
+    this.singNode!.frequency.linearRampToValueAtTime(620 + sing * 260, ramp);
+    this.singGain!.gain.linearRampToValueAtTime(sing * grindIntensity * 0.07, ramp);
+  }
+
+  /** Build the grinding sound graph the first time it's needed */
+  private ensureGrindNodes(): void {
+    if (this.grindNode || !this.ctx || !this.masterGain) return;
+
+    {
       // Grinding tone (sawtooth oscillator + noise for texture)
       this.grindNode = this.ctx.createOscillator();
       this.grindNode.type = 'sawtooth';
@@ -93,16 +128,31 @@ export class AudioManager {
       noiseFilter.connect(this.grindNoiseGain);
       this.grindNoiseGain.connect(this.masterGain);
       this.noiseSource.start();
-    }
+      this.grindNoiseFilter = noiseFilter;
 
-    // Modulate based on intensity
-    const now = this.ctx.currentTime;
-    this.grindGain!.gain.linearRampToValueAtTime(grindIntensity * 0.15, now + 0.05);
-    this.grindNoiseGain!.gain.linearRampToValueAtTime(grindIntensity * 0.08, now + 0.05);
-    // Pitch varies with what you're grinding - higher = hitting defect, lower = clean rail
-    this.grindNode!.frequency.linearRampToValueAtTime(
-      120 + grindIntensity * 100, now + 0.1
-    );
+      // Sweet-spot "sing": a triangle wave with gentle vibrato through a
+      // resonant bandpass — sounds like a clean cut ringing in the steel
+      this.singNode = this.ctx.createOscillator();
+      this.singNode.type = 'triangle';
+      this.singNode.frequency.value = 620;
+      const vibrato = this.ctx.createOscillator();
+      vibrato.frequency.value = 6;
+      const vibratoDepth = this.ctx.createGain();
+      vibratoDepth.gain.value = 9; // ±9 Hz wobble
+      vibrato.connect(vibratoDepth);
+      vibratoDepth.connect(this.singNode.frequency);
+      const ring = this.ctx.createBiquadFilter();
+      ring.type = 'bandpass';
+      ring.frequency.value = 760;
+      ring.Q.value = 6;
+      this.singGain = this.ctx.createGain();
+      this.singGain.gain.value = 0;
+      this.singNode.connect(ring);
+      ring.connect(this.singGain);
+      this.singGain.connect(this.masterGain);
+      this.singNode.start();
+      vibrato.start();
+    }
   }
 
   /** Stop the grinding sound */
@@ -110,9 +160,8 @@ export class AudioManager {
     if (!this.ctx || !this.grindGain) return;
     const now = this.ctx.currentTime;
     this.grindGain.gain.linearRampToValueAtTime(0, now + 0.15);
-    if (this.grindNoiseGain) {
-      this.grindNoiseGain.gain.linearRampToValueAtTime(0, now + 0.15);
-    }
+    this.grindNoiseGain?.gain.linearRampToValueAtTime(0, now + 0.15);
+    this.singGain?.gain.linearRampToValueAtTime(0, now + 0.15);
   }
 
   /** Play a completion ding (synthesized bell) */
@@ -332,6 +381,7 @@ export class AudioManager {
 
   dispose(): void {
     this.grindNode?.stop();
+    this.singNode?.stop();
     this.dieselNode?.stop();
     this.noiseSource?.stop();
     this.windSource?.stop();
