@@ -9,7 +9,8 @@ src/
 ├── core/
 │   ├── Engine.ts            # Three.js renderer, scene, camera, pixel-art pipeline
 │   ├── InputManager.ts      # Keyboard and mouse state tracking
-│   └── EventBus.ts          # Simple pub/sub for decoupled communication
+│   ├── EventBus.ts          # Simple pub/sub for decoupled communication
+│   └── dispose.ts           # Frees GPU memory of discarded scene objects
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
 │   ├── RailSegment.ts       # 3D mesh extruded from a profile, with visual state
@@ -34,8 +35,7 @@ src/
 │   ├── RadioDispatch.ts     # Periodic dispatch messages
 │   ├── InspectionReport.ts  # Pre/post job reports with RQI
 │   ├── JobSelect.ts         # Job selection screen with US map
-│   ├── GuidedTutorial.ts    # Interactive onboarding (teaches by doing)
-│   └── TutorialManager.ts   # Legacy text-box tutorial (largely superseded)
+│   └── GuidedTutorial.ts    # Interactive onboarding (teaches by doing)
 └── types/
     └── rail.ts              # Shared type definitions
 ```

@@ -30,7 +30,7 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | P | Toggle rain |
 | M | Mute audio |
 | ESC | Pause menu (resume, restart, quit to menu) |
-| R | Restart |
+| R | Restart current job |
 
 ## How to Play
 
@@ -50,7 +50,7 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 
 8. **Complete a section** when both rails reach 80%+ accuracy. The slow order lifts and you see "SLOW ORDER LIFTED — TRACK SPEED 60 MPH".
 
-9. **Beat the deadline** — dispatch sends revenue trains through periodically. A countdown timer shows when the next one arrives.
+9. **Beat the deadline** — dispatch sends revenue trains through periodically. A countdown timer shows when the next one arrives. If a train arrives and you haven't cleared any sections since the countdown started, it's delayed and costs you a star on the final report.
 
 10. **Complete all sections** to trigger the inspection pass — a cinematic camera sweep showing your finished work.
 

@@ -44,6 +44,7 @@ export interface CompletionReport extends JobReport {
   stars: number;          // 1-5
   rqiBefore: number;
   rqiAfter: number;
+  missedWindows: number;  // revenue trains that arrived with no sections cleared
 }
 
 const DEFECT_NAMES = [
@@ -325,6 +326,10 @@ export class InspectionReport {
             <div style="text-align: center; background: rgba(255,255,255,0.03); padding: 10px 16px; border: 1px solid #333;">
               <div style="font-size: 6px; color: #888; letter-spacing: 2px;">METAL REMOVED</div>
               <div style="font-size: 14px; color: #fff; margin-top: 2px;">${report.metalRemoved.toFixed(2)}mm</div>
+            </div>
+            <div style="text-align: center; background: rgba(255,255,255,0.03); padding: 10px 16px; border: 1px solid #333;">
+              <div style="font-size: 6px; color: #888; letter-spacing: 2px;">TRAINS DELAYED</div>
+              <div style="font-size: 14px; color: ${report.missedWindows > 0 ? '#ff4444' : '#44ff44'}; margin-top: 2px;">${report.missedWindows}${report.missedWindows > 0 ? ` (-${report.missedWindows}&#9733;)` : ''}</div>
             </div>
           </div>
 

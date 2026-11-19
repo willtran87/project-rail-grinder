@@ -59,27 +59,6 @@
       #progress-pill .sections { color: #fff; font-weight: 600; }
       #progress-pill .accuracy { font-weight: 600; margin-left: 8px; }
 
-      /* ---- Tutorial ---- */
-      #tutorial-overlay {
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        pointer-events: none; z-index: 10;
-      }
-      .tutorial-box {
-        position: absolute; background: var(--ui-bg);
-        border: 1px solid var(--ui-accent); border-radius: 8px;
-        padding: 16px 20px; font-size: 12px; line-height: 1.8;
-        color: #fff; max-width: 400px; pointer-events: auto; z-index: 11;
-      }
-      .tutorial-box .tutorial-title { color: var(--ui-accent); font-weight: 700; font-size: 13px; display: block; margin-bottom: 6px; }
-      .tutorial-box .tutorial-text { color: var(--ui-text); display: block; margin-bottom: 8px; }
-      .tutorial-box .tutorial-hint { color: var(--ui-green); font-size: 10px; }
-      .tutorial-btn {
-        background: var(--ui-accent); color: #000; border: none;
-        font-family: var(--ui-font); font-size: 11px; font-weight: 600;
-        padding: 8px 20px; border-radius: 4px; cursor: pointer; margin-top: 6px;
-      }
-      .tutorial-btn:hover { filter: brightness(1.15); }
-
       /* ---- Profile SETUP mode (enlarged, centered) ---- */
       #profile-container.setup-mode {
         position: absolute;
@@ -386,7 +365,6 @@
     </div>
 
     <!-- Overlays -->
-    <div id="tutorial-overlay"></div>
     <div id="tooltip"></div>
     <div id="results-screen"><div id="results-content"></div></div>
 

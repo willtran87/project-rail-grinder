@@ -22,7 +22,6 @@ import { SparkSystem } from './effects/SparkSystem';
 import { GrindContact } from './effects/GrindContact';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
-import { TutorialManager } from './ui/TutorialManager';
 import { GuidedTutorial } from './ui/GuidedTutorial';
 import { TrackMap } from './ui/TrackMap';
 import { FloatingScore } from './ui/FloatingScore';
@@ -30,6 +29,7 @@ import { RadioDispatch } from './ui/RadioDispatch';
 import { InspectionReport } from './ui/InspectionReport';
 import { JobSelect, type JobDefinition } from './ui/JobSelect';
 import { eventBus } from './core/EventBus';
+import { disposeObject3D } from './core/dispose';
 import type { TargetProfile } from './types/rail';
 
 let SEGMENT_COUNT = 15;
@@ -46,7 +46,6 @@ export class Game {
   private dayNight: DayNightCycle;
   private sparkSystem: SparkSystem;
   private audio: AudioManager;
-  private tutorial: TutorialManager;
   private trackMap: TrackMap;
   private floatingScore: FloatingScore;
   private passingTrain: PassingTrain;
@@ -125,6 +124,7 @@ export class Game {
   private deadlineTotal: number = 0;
   private deadlineWarned: boolean = false;
   private sectionsAtDeadlineStart: number = 0;
+  private missedWindows: number = 0; // trains that arrived with no progress — each costs a star
   private revenueTrainProgress: number = 0; // 0 = at end of track, 1 = arrived at grinder
 
   // Inspection pass
@@ -318,9 +318,6 @@ export class Game {
     // Initialize track map with defect severity
     this.updateTrackMapDefects();
 
-
-    this.tutorial = new TutorialManager();
-
     // Show job selection screen first
     this.startJobSelect();
 
@@ -508,8 +505,12 @@ export class Game {
   }
 
   private update(dt: number): void {
-    if (this.input.wasKeyPressed('r')) {
-      window.location.reload();
+    // R restarts the current job (only during active play — never from menus)
+    if (this.input.wasKeyPressed('r') && this.gameStarted && !this.jobComplete
+        && !this.inspectionPass && this.currentJob) {
+      this.rebuildForJob(this.currentJob);
+      this.input.endFrame();
+      return;
     }
 
     // ESC toggles pause during gameplay
@@ -931,7 +932,6 @@ export class Game {
     if (this.audioReady) this.audio.startGrinding(avgPressure / 80);
 
     eventBus.emit('grind-contact', { sectionIndex });
-    this.tutorial.notifyEvent('grind-contact');
   }
 
   private handleDeadline(dt: number): void {
@@ -999,7 +999,13 @@ export class Game {
       if (completed > 0) {
         this.floatingScore.show(`${completed} sections cleared!`, '#44ff44');
       } else {
-        this.floatingScore.show('TRAIN PASSED — NO SECTIONS CLEARED', '#ff4444');
+        // Penalty: the revenue train was held up by unfinished work
+        this.missedWindows++;
+        this.floatingScore.show('TRAIN DELAYED — NO SECTIONS CLEARED', '#ff4444');
+        setTimeout(() => {
+          this.floatingScore.show('-1 ★ ON FINAL REPORT', '#ff4444',
+            window.innerWidth / 2, window.innerHeight / 2 - 30);
+        }, 400);
       }
 
       if (this.audioReady) this.audio.playSegmentComplete();
@@ -1250,7 +1256,9 @@ export class Game {
     const completedCount = this.segmentCompleted.filter(c => c).length;
 
     const rqiAfter = postJobReport.overallRQI;
-    const stars = rqiAfter >= 95 ? 5 : rqiAfter >= 85 ? 4 : rqiAfter >= 75 ? 3 : rqiAfter >= 60 ? 2 : 1;
+    const baseStars = rqiAfter >= 95 ? 5 : rqiAfter >= 85 ? 4 : rqiAfter >= 75 ? 3 : rqiAfter >= 60 ? 2 : 1;
+    // Each delayed revenue train costs a star (never below 1)
+    const stars = Math.max(1, baseStars - this.missedWindows);
 
     this.inspectionReport.showCompletionReport({
       ...postJobReport,
@@ -1261,6 +1269,7 @@ export class Game {
       stars,
       rqiBefore: this.preJobRQI,
       rqiAfter,
+      missedWindows: this.missedWindows,
     }).then(() => {
       // Return to job select for next contract
       this.startJobSelect();
@@ -1288,17 +1297,42 @@ export class Game {
 
   /** Tear down current job and rebuild for a new one */
   private rebuildForJob(job: JobDefinition): void {
-    // Remove and dispose old track, environment, and passing train
+    // Freeze gameplay until startGame() runs (the pre-job report may be showing)
+    this.gameStarted = false;
+    this.jobComplete = false;
+    this.inspectionPass = false;
+    this.isPaused = false;
+    this.pauseMenu.style.display = 'none';
+
+    // Clear any revenue-train countdown from the previous attempt
+    this.deadlineActive = false;
+    this.deadlineTimer = 0;
+    this.missedWindows = 0;
+    this.deadlineBar.style.display = 'none';
+    this.trackMap.setRevenueTrainPosition(-1);
+
+    // Stop grinding effects that may still be running
+    this.isGrinding = false;
+    this.grinder.setGrinding(false);
+    this.sparkSystem.stopEmitting();
+    this.grindContact.setInactive();
+    if (this.audioReady) this.audio.stopGrinding();
+
+    // Remove old track, environment, and passing train — and free their GPU memory
+    // (removing from the scene alone leaves geometry/materials/textures allocated)
     if (this.track) {
       this.engine.scene.remove(this.track.group);
       this.track.dispose();
     }
     if (this.environment) {
       this.engine.scene.remove(this.environment.group);
+      disposeObject3D(this.environment.group);
     }
     if (this.passingTrain) {
       this.engine.scene.remove(this.passingTrain.group);
       this.engine.scene.remove(this.passingTrain.adjacentTrack);
+      disposeObject3D(this.passingTrain.group);
+      disposeObject3D(this.passingTrain.adjacentTrack);
     }
 
     // Build new track from job definition
@@ -1359,7 +1393,6 @@ export class Game {
       this.startTime = Date.now();
       this.deadlineTimer = 0;
       this.deadlineActive = false;
-      this.tutorial = new TutorialManager();
     };
 
     // First job: skip report, go straight to guided gameplay

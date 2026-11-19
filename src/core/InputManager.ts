@@ -31,6 +31,7 @@ export class InputManager {
   private boundHandlers: {
     keydown: (e: KeyboardEvent) => void;
     keyup: (e: KeyboardEvent) => void;
+    blur: () => void;
     mousemove: (e: MouseEvent) => void;
     mousedown: (e: MouseEvent) => void;
     mouseup: (e: MouseEvent) => void;
@@ -41,7 +42,7 @@ export class InputManager {
   constructor() {
     this.boundHandlers = {
       keydown: (e: KeyboardEvent) => {
-        const key = e.key.toLowerCase();
+        const key = InputManager.normalizeKey(e);
         // Prevent TAB from shifting browser focus away from the game
         if (key === 'tab') e.preventDefault();
         if (!this.keysDown.has(key)) {
@@ -50,7 +51,13 @@ export class InputManager {
         this.keysDown.add(key);
       },
       keyup: (e: KeyboardEvent) => {
-        this.keysDown.delete(e.key.toLowerCase());
+        this.keysDown.delete(InputManager.normalizeKey(e));
+      },
+      // Alt-tabbing away while holding a key means we never get its keyup,
+      // so the key would stay "stuck" down. Release everything instead.
+      blur: () => {
+        this.keysDown.clear();
+        this.mouseDown = false;
       },
       mousemove: (e: MouseEvent) => {
         this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -79,11 +86,22 @@ export class InputManager {
 
     window.addEventListener('keydown', this.boundHandlers.keydown);
     window.addEventListener('keyup', this.boundHandlers.keyup);
+    window.addEventListener('blur', this.boundHandlers.blur);
     window.addEventListener('mousemove', this.boundHandlers.mousemove);
     window.addEventListener('mousedown', this.boundHandlers.mousedown);
     window.addEventListener('mouseup', this.boundHandlers.mouseup);
     window.addEventListener('wheel', this.boundHandlers.wheel);
     window.addEventListener('contextmenu', this.boundHandlers.contextmenu);
+  }
+
+  /**
+   * Turn a keyboard event into the lowercase key name the game checks for.
+   * Number keys use the physical key (e.code), because with SHIFT held
+   * e.key reports '!' instead of '1' — which broke camera switching.
+   */
+  private static normalizeKey(e: KeyboardEvent): string {
+    if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
+    return e.key.toLowerCase();
   }
 
   /** Check if a key is currently held down */
@@ -108,6 +126,7 @@ export class InputManager {
   dispose(): void {
     window.removeEventListener('keydown', this.boundHandlers.keydown);
     window.removeEventListener('keyup', this.boundHandlers.keyup);
+    window.removeEventListener('blur', this.boundHandlers.blur);
     window.removeEventListener('mousemove', this.boundHandlers.mousemove);
     window.removeEventListener('mousedown', this.boundHandlers.mousedown);
     window.removeEventListener('mouseup', this.boundHandlers.mouseup);
