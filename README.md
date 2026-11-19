@@ -32,6 +32,7 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | C | Toggle colour-blind palette (remembered) |
 | `` ` `` (backtick) | Toggle FPS / frame-time counter |
 | F | Photo mode: drag or arrows to orbit, wheel or W/S to zoom, A/D to slide along the track, K to save a PNG, F or ESC to exit |
+| G | Graphics quality: High → Medium → Low (remembered) |
 | ESC | Pause menu (resume, restart, quit, controls list) |
 | R | Restart current job |
 
@@ -58,6 +59,16 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 10. **Complete all sections** to trigger the inspection pass — a cinematic camera sweep showing your finished work.
 
 11. **Beat your best** — your best stars, RQI and time for each job are saved in the browser and shown on the job cards.
+
+## Career Mode
+
+- **Get paid** for every contract: more stars = more pay (1★ ≈ 55% of the contract’s base pay, 5★ ≈ 115%).
+- **Unlock contracts** with your career stars (the sum of your best stars on every job): Medium needs ★3, Hard ★7, Expert ★12.
+- **Buy upgrades** on the contract screen, three levels each:
+  - *Stone Cooling System* — stones heat up 20% slower per level
+  - *Hard-Cut Stone Compound* — remove 12% more metal per level
+  - *Wide-Face Stones* — contact patch 12% wider per level (covers more, but easier to over-grind)
+- Progress is saved in your browser. For testing, add `?unlock` to the URL to open every contract.
 
 ## Jobs
 

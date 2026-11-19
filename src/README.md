@@ -12,11 +12,13 @@ src/
 │   ├── EventBus.ts          # Simple pub/sub for decoupled communication
 │   ├── CameraController.ts  # Camera views (1-5), screen shake, inspection cinematic
 │   ├── storage.ts           # Safe localStorage wrapper (never throws)
+│   ├── quality.ts           # Graphics quality presets (key G)
 │   └── dispose.ts           # Frees GPU memory of discarded scene objects
 ├── game/                    # Pure game logic — no Three.js/DOM, fully unit-tested
 │   ├── rules.ts             # ALL tuning numbers + scoring formulas (rebalance here)
 │   ├── sectionMetrics.ts    # Accuracy/deviation of a whole 20m section
 │   ├── progress.ts          # Personal bests per job (saved in localStorage)
+│   ├── career.ts            # Money, upgrades, unlocks (career mode)
 │   └── *.test.ts            # Tests for the above (npm test)
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
@@ -33,6 +35,7 @@ src/
 │   ├── SkyDome.ts           # Gradient sky shader with sun/moon and stars
 │   ├── GroundMist.ts        # Drifting low haze, clear near the grinder
 │   ├── Ocean.ts             # Coast job: wave shader sea + beach following the track
+│   ├── SlowOrderSigns.ts    # Yellow speed boards that flip green when cleared
 │   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
 │   ├── Weather.ts           # Rain particle system
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground

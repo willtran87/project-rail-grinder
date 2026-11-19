@@ -7,6 +7,10 @@
 
 import * as THREE from 'three';
 import { loadRecords, formatTime, type JobRecord } from '../game/progress';
+import {
+  loadCareer, saveCareer, buyUpgrade, nextUpgradeCost, jobPay, isUnlocked, totalBestStars,
+  formatMoney, UPGRADES, type CareerState, type UpgradeId,
+} from '../game/career';
 
 export interface JobDefinition {
   id: string;
@@ -22,6 +26,10 @@ export interface JobDefinition {
   trackPoints: THREE.Vector3[];
   /** Special scenery for this route ('coast' = ocean + beach on the west side) */
   scenery?: 'coast';
+  /** Contract pay at 5★ ≈ 115% of this (see career.jobPay) */
+  basePay: number;
+  /** Total best stars (across all jobs) needed to take this contract */
+  starsToUnlock: number;
 }
 
 export const JOBS: JobDefinition[] = [
@@ -31,6 +39,8 @@ export const JOBS: JobDefinition[] = [
     location: 'Kansas',
     description: 'The Southern Transcon is one of America\'s busiest freight corridors. Long straights across the Great Plains with 100M+ gross tons annually. Head checking and corrugation from high-speed intermodal traffic at 60-70 mph.',
     difficulty: 'Easy',
+    basePay: 6000,
+    starsToUnlock: 0,
     difficultyColor: '#44cc44',
     trackLength: '280m',
     sections: 14,
@@ -59,6 +69,8 @@ export const JOBS: JobDefinition[] = [
     location: 'Montana',
     description: 'Crossing the Continental Divide at 5,213 ft — the lowest rail crossing of the Rockies. Sharp 4-8 degree curves on the western descent with heavy coal and grain unit trains. Severe gauge face wear and cold-weather fracture risk.',
     difficulty: 'Medium',
+    basePay: 9000,
+    starsToUnlock: 3,
     difficultyColor: '#ccaa22',
     trackLength: '380m',
     sections: 18,
@@ -97,6 +109,8 @@ export const JOBS: JobDefinition[] = [
     location: 'Chicago, IL',
     description: 'Belt Railway of Chicago — where 25% of US rail freight converges. Tight urban curves around Clearing Yard. Constant stop-and-go traffic causes severe rail crush, corrugation, and switch wear. Night shift on the busiest rail junction in America.',
     difficulty: 'Hard',
+    basePay: 13000,
+    starsToUnlock: 7,
     difficultyColor: '#dd6622',
     trackLength: '300m',
     sections: 15,
@@ -130,6 +144,8 @@ export const JOBS: JobDefinition[] = [
     location: 'California',
     description: 'Union Pacific\'s Coast Subdivision between Surf and San Luis Obispo. Tracks run directly along the Pacific Ocean. Salt spray corrosion, base pitting, and mixed-traffic fatigue from Amtrak Coast Starlight and UP freight. Dawn start for golden hour over the ocean.',
     difficulty: 'Expert',
+    basePay: 18000,
+    starsToUnlock: 12,
     difficultyColor: '#dd2244',
     trackLength: '420m',
     sections: 21,
@@ -242,15 +258,58 @@ export class JobSelect {
       </div>`;
   }
 
+  /** Career summary + upgrade shop, shown under the job cards */
+  private upgradesHTML(career: CareerState): string {
+    let html = `
+      <div style="margin-top: 28px;">
+        <div style="font-size: 11px; color: rgba(255,170,0,0.6); letter-spacing: 6px; margin-bottom: 10px; text-align: center;">GRINDER UPGRADES</div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">`;
+    for (const up of UPGRADES) {
+      const level = career.upgrades[up.id];
+      const cost = nextUpgradeCost(career, up.id);
+      const canBuy = cost !== null && career.money >= cost;
+      const pips = '●'.repeat(level) + '○'.repeat(up.costs.length - level);
+      const button = cost === null
+        ? `<div style="color: #44cc44; font-size: 11px; font-weight: 600;">MAXED</div>`
+        : `<button class="buy-upgrade" data-upgrade="${up.id}" ${canBuy ? '' : 'disabled'} style="
+            background: ${canBuy ? 'var(--ui-accent, #e8a020)' : 'rgba(255,255,255,0.06)'};
+            color: ${canBuy ? '#000' : '#666'}; border: none; border-radius: 4px;
+            padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: ${canBuy ? 'pointer' : 'not-allowed'};
+          ">BUY ${formatMoney(cost)}</button>`;
+      html += `
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px;">
+          <div style="font-size: 13px; font-weight: 600;">${up.name}</div>
+          <div style="font-size: 11px; color: #888; margin: 4px 0 8px;">${up.effect} per level</div>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #e8a020; letter-spacing: 3px;">${pips}</span>
+            ${button}
+          </div>
+        </div>`;
+    }
+    return html + `</div></div>`;
+  }
+
   /** Show job selection and return the chosen job */
   show(): Promise<JobDefinition> {
-    return new Promise((resolve) => {
+    return new Promise((resolve) => this.render(resolve));
+  }
+
+  /** Draw the whole screen; re-run after buying an upgrade */
+  private render(resolve: (job: JobDefinition) => void): void {
       const records = loadRecords();
+      const career = loadCareer();
+      const totalStars = totalBestStars(records);
+      // Dev/testing shortcut: add ?unlock to the URL to open every contract
+      const unlockAll = new URLSearchParams(window.location.search).has('unlock');
       let html = `
         <div style="max-width: 900px; padding: 30px 20px; margin: 20px auto;">
           <div style="text-align: center; margin-bottom: 20px;">
             <div style="font-size: 11px; color: rgba(255,170,0,0.6); letter-spacing: 6px; margin-bottom: 6px;">SELECT CONTRACT</div>
             <div style="font-size: 28px; font-weight: 700; letter-spacing: 2px;">AVAILABLE JOBS</div>
+            <div style="margin-top: 10px; font-size: 14px; color: #aaa;">
+              <span style="color: #44cc44; font-weight: 700;">${formatMoney(career.money)}</span>
+              &nbsp;·&nbsp; <span style="color: #ffdd00;">★ ${totalStars}</span> career stars
+            </div>
           </div>
           <div style="display: flex; justify-content: center; margin-bottom: 20px;">
             <canvas id="us-map-canvas" width="600" height="320" style="
@@ -262,13 +321,17 @@ export class JobSelect {
       `;
 
       for (const job of JOBS) {
+        const unlocked = unlockAll || isUnlocked(job.starsToUnlock, totalStars);
+        const status = unlocked
+          ? this.bestRecordHTML(records[job.id])
+          : `<div style="margin-left: auto; color: #aaa;">🔒 Needs ★ ${job.starsToUnlock} (you have ${totalStars})</div>`;
         html += `
-          <div class="job-card" data-job="${job.id}" style="
+          <div class="job-card" data-job="${job.id}" data-locked="${unlocked ? 'no' : 'yes'}" style="
             background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 8px; padding: 20px; cursor: pointer;
-            transition: all 0.2s;
-          " onmouseover="this.style.borderColor='rgba(232,160,32,0.5)';this.style.background='rgba(255,255,255,0.06)'"
-             onmouseout="this.style.borderColor='rgba(255,255,255,0.08)';this.style.background='rgba(255,255,255,0.03)'">
+            border-radius: 8px; padding: 20px; cursor: ${unlocked ? 'pointer' : 'not-allowed'};
+            transition: all 0.2s; opacity: ${unlocked ? 1 : 0.45};
+          " ${unlocked ? `onmouseover="this.style.borderColor='rgba(232,160,32,0.5)';this.style.background='rgba(255,255,255,0.06)'"
+             onmouseout="this.style.borderColor='rgba(255,255,255,0.08)';this.style.background='rgba(255,255,255,0.03)'"` : ''}>
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
               <div>
                 <div style="font-size: 16px; font-weight: 600;">${job.name}</div>
@@ -286,20 +349,22 @@ export class JobSelect {
             <div style="display: flex; gap: 16px; font-size: 11px; color: #666; flex-wrap: wrap;">
               <div><span style="color: #aaa;">${job.trackLength}</span> track</div>
               <div><span style="color: #aaa;">${job.sections}</span> sections</div>
-              ${this.bestRecordHTML(records[job.id])}
+              <div>pays up to <span style="color: #44cc44;">${formatMoney(jobPay(job.basePay, 5))}</span></div>
+              ${status}
             </div>
           </div>
         `;
       }
 
-      html += `</div></div>`;
+      html += `</div>${this.upgradesHTML(career)}</div>`;
       this.overlay.innerHTML = html;
       this.overlay.style.display = 'flex';
 
-      // Bind click handlers
+      // Bind click handlers (locked contracts can't be taken)
       const cards = this.overlay.querySelectorAll('.job-card');
       cards.forEach((card) => {
         card.addEventListener('click', () => {
+          if (card.getAttribute('data-locked') === 'yes') return;
           const jobId = card.getAttribute('data-job');
           const job = JOBS.find(j => j.id === jobId)!;
           this.overlay.style.display = 'none';
@@ -307,9 +372,20 @@ export class JobSelect {
         });
       });
 
+      // Upgrade purchases: spend money, save, redraw the screen
+      this.overlay.querySelectorAll('.buy-upgrade').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-upgrade') as UpgradeId;
+          const result = buyUpgrade(loadCareer(), id);
+          if (result.bought) {
+            saveCareer(result.state);
+            this.render(resolve);
+          }
+        });
+      });
+
       // Draw the US map
       this.drawUSMap();
-    });
   }
 
   private drawUSMap(): void {

@@ -21,6 +21,7 @@ import { Weather } from './world/Weather';
 import { GrindEffects } from './effects/GrindEffects';
 import { GroundMist } from './world/GroundMist';
 import { Ocean } from './world/Ocean';
+import { SlowOrderSigns } from './world/SlowOrderSigns';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
 import { GuidedTutorial } from './ui/GuidedTutorial';
@@ -41,8 +42,10 @@ import {
 } from './game/rules';
 import { sectionAccuracy, sectionMeanAccuracy, sectionWorstDeviation } from './game/sectionMetrics';
 import { recordResult } from './game/progress';
+import { loadCareer, saveCareer, upgradeEffects, jobPay } from './game/career';
 import { PerfOverlay } from './ui/PerfOverlay';
 import { PhotoMode } from './ui/PhotoMode';
+import { loadQuality, cycleQuality, QUALITY_PRESETS, type QualityLevel } from './core/quality';
 import { toggleColorblindMode } from './ui/palette';
 
 const RAILS = ['left', 'right'] as const;
@@ -55,6 +58,7 @@ export class Game {
   private profileRenderer: ProfileRenderer;
   private environment!: Environment;
   private ocean: Ocean | null = null; // only on coastal jobs
+  private slowSigns: SlowOrderSigns | null = null;
   private dayNight: DayNightCycle;
   private grindEffects: GrindEffects; // sparks, work lights, contact glow
   private groundMist: GroundMist;
@@ -114,6 +118,10 @@ export class Game {
   private camera: CameraController;
   // Free camera, hidden HUD, save PNG (key F)
   private photoMode: PhotoMode;
+  // Graphics quality preset (key G)
+  private quality: QualityLevel = loadQuality();
+  // Career upgrade multipliers for the current job (heat / removal / contact width)
+  private upgrades = upgradeEffects(loadCareer().upgrades);
 
   // Revenue train countdown + "missed window" penalty
   private deadline: RevenueTrainDeadline;
@@ -181,6 +189,21 @@ export class Game {
     this.weather.update(dt, target);
     if (this.input.wasKeyPressed('n')) this.dayNight.cycleTime();
     if (this.input.wasKeyPressed('p')) this.weather.toggle();
+  }
+
+  /** Turn the current quality preset into renderer settings */
+  private applyQuality(): void {
+    const q = QUALITY_PRESETS[this.quality];
+    this.engine.bloomEnabled = q.bloom;
+    const sun = this.engine.directionalLight;
+    sun.castShadow = q.shadowMapSize > 0;
+    if (q.shadowMapSize > 0 && sun.shadow.mapSize.x !== q.shadowMapSize) {
+      sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
+      sun.shadow.map?.dispose(); // three.js re-creates it at the new size
+      sun.shadow.map = null;
+    }
+    this.groundMist.group.visible = q.mist;
+    this.grindEffects.dustAmount = q.dustAmount;
   }
 
   /** Sky, sun, fog, colour grade and ground mist — all follow time of day and the grinder */
@@ -263,6 +286,7 @@ export class Game {
     // Low-lying haze around the grinder (density/colour follow time of day)
     this.groundMist = new GroundMist();
     this.engine.scene.add(this.groundMist.group);
+    this.applyQuality(); // bloom / shadows / mist / dust from the saved preset
 
     // Audio
     this.audio = new AudioManager();
@@ -463,6 +487,11 @@ export class Game {
     // Settings toggles work everywhere, including menus
     this.perfOverlay.update();
     if (this.input.wasKeyPressed('`')) this.perfOverlay.toggle();
+    if (this.input.wasKeyPressed('g')) {
+      this.quality = cycleQuality(this.quality);
+      this.applyQuality();
+      this.floatingScore.show(`GRAPHICS: ${this.quality.toUpperCase()}`, '#ffffff');
+    }
     if (this.input.wasKeyPressed('c')) {
       // Track map and profile displays read the palette every time they draw
       const on = toggleColorblindMode();
@@ -535,6 +564,7 @@ export class Game {
     this.updateAtmosphere(dt);
     this.grindEffects.update(dt);
     this.grinder.update(dt);
+    this.slowSigns?.update(dt);
 
     // Update rail segment animations (flash fade, etc.)
     for (let vi = 0; vi < this.track.segmentCount; vi++) {
@@ -740,8 +770,9 @@ export class Game {
     this.isGrinding = this.input.isKeyDown(' ');
     const avgPressure = (this.stonePressure.left + this.stonePressure.right) / 2;
 
-    // Heat: builds with pressure while grinding, cools while lifted
-    const heatChange = this.isGrinding ? heatRatePerSec(avgPressure) : -COOL_RATE;
+    // Heat: builds with pressure while grinding (cooling upgrade slows it), cools while lifted
+    const heatRate = heatRatePerSec(avgPressure);
+    const heatChange = this.isGrinding ? (heatRate > 0 ? heatRate * this.upgrades.heat : heatRate) : -COOL_RATE;
     this.stoneHeat = Math.max(0, Math.min(100, this.stoneHeat + heatChange * dt));
     this.overheatWarning = this.stoneHeat > 80;
     this.overgrindCooldown = Math.max(0, this.overgrindCooldown - dt);
@@ -749,7 +780,7 @@ export class Game {
     // Always show where each stone is aimed on the profile displays
     for (const rail of RAILS) {
       this.rendererFor(rail).setStoneContact(
-        stoneGrindX(this.stoneAngle[rail]), stoneContactWidth(this.stonePressure[rail]),
+        stoneGrindX(this.stoneAngle[rail]), stoneContactWidth(this.stonePressure[rail]) * this.upgrades.width,
         this.stonePressure[rail], true, this.isGrinding);
       this.rendererFor(rail).setPreview(null);
     }
@@ -774,14 +805,14 @@ export class Game {
     let overgrinding = false;
     for (const rail of RAILS) {
       const grindX = stoneGrindX(this.stoneAngle[rail]);
-      const depth = removalRatePerSec(this.stonePressure[rail]) * penalty * dt;
+      const depth = removalRatePerSec(this.stonePressure[rail]) * this.upgrades.removal * penalty * dt;
       const profile = this.track.getProfile(visualSegIndex, rail);
 
       // Before cutting: is this stone on a defect? (0 = clean rail, 1 = deep defect)
       const excess = profile.getDeviationAtX(grindX, this.targetProfile) - tol;
       onDefect += Math.max(0, Math.min(1, excess / 0.08)) / RAILS.length;
 
-      profile.removeMetalAt(grindX, stoneContactWidth(this.stonePressure[rail]), depth);
+      profile.removeMetalAt(grindX, stoneContactWidth(this.stonePressure[rail]) * this.upgrades.width, depth);
       this.totalMetalRemoved += depth;
 
       // Over-grind: went past the target line at the stone centre
@@ -864,6 +895,7 @@ export class Game {
 
   private completeSegment(sectionIndex: number, accuracy: number): void {
     const hadSlowOrder = this.segmentSlowOrder[sectionIndex];
+    if (hadSlowOrder) this.slowSigns?.clear(sectionIndex); // board spins to green
     this.segmentCompleted[sectionIndex] = true;
     this.segmentSlowOrder[sectionIndex] = false;
     this.consecutiveCompleted++;
@@ -1042,6 +1074,12 @@ export class Game {
       ? recordResult(this.currentJob.id, { stars, rqi: rqiAfter, time: elapsed })
       : { newBest: false };
 
+    // Career: get paid for the contract (more stars = more pay)
+    const pay = this.currentJob ? jobPay(this.currentJob.basePay, stars) : 0;
+    const career = loadCareer();
+    career.money += pay;
+    saveCareer(career);
+
     this.inspectionReport.showCompletionReport({
       ...postJobReport,
       sectionsCompleted: completedCount,
@@ -1053,6 +1091,7 @@ export class Game {
       rqiAfter,
       missedWindows: this.deadline.missedWindows,
       newBest,
+      pay,
     }).then(() => {
       // Return to job select for next contract
       this.startJobSelect();
@@ -1094,6 +1133,11 @@ export class Game {
       this.engine.scene.remove(this.environment.group);
       disposeObject3D(this.environment.group);
     }
+    if (this.slowSigns) {
+      this.engine.scene.remove(this.slowSigns.group);
+      disposeObject3D(this.slowSigns.group);
+      this.slowSigns = null;
+    }
     if (this.ocean) {
       this.engine.scene.remove(this.ocean.group);
       disposeObject3D(this.ocean.group);
@@ -1129,6 +1173,9 @@ export class Game {
     this.applyInitialDefects(job);
     this.setSegmentDefectGlow();
     this.assignSlowOrders();
+    // Physical slow-order boards at each restricted section
+    this.slowSigns = new SlowOrderSigns(this.track, this.segmentSlowOrder);
+    this.engine.scene.add(this.slowSigns.group);
     this.initialSectionAccuracy = [];
     for (let sec = 0; sec < this.sectionCount; sec++) {
       this.initialSectionAccuracy.push(sectionMeanAccuracy(this.track, this.targetProfile, sec));
@@ -1183,6 +1230,8 @@ export class Game {
     if (this.audioReady) this.audio.stopGrinding();
 
     this.buildWorld(job);
+    // Grinder upgrades bought in the shop apply to this job
+    this.upgrades = upgradeEffects(loadCareer().upgrades);
 
     // Compute pre-job report
     const preJobReport = this.inspectionReport.computeJobReport(this.track, this.targetProfile);

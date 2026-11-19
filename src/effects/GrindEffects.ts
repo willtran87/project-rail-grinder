@@ -25,6 +25,8 @@ export class GrindEffects {
   private sparks: SparkSystem;
   private contact: GrindContact;
   private dust: DustSystem;
+  /** 0..1 multiplier on dust emission (graphics quality setting) */
+  dustAmount = 1;
   private _dustOrigin = new THREE.Vector3();
   private _dustDrift = new THREE.Vector3();
   private lights: THREE.PointLight[] = [];
@@ -133,7 +135,7 @@ export class GrindEffects {
 
     // Dust: each grinding car occasionally puffs a cloud off each rail.
     // More pressure = more dust. It lags behind as the consist moves on.
-    const dustChance = 0.25 * (avgPressure / 50);
+    const dustChance = 0.25 * (avgPressure / 50) * this.dustAmount;
     for (let c = 0; c < GRIND_CAR_OFFSETS.length; c++) {
       if (Math.random() > dustChance) continue;
       const ep = this.emitPool[c * STONES_PER_CAR + Math.floor(Math.random() * STONES_PER_CAR)];
