@@ -52,6 +52,24 @@ export class GrindEffects {
     this.contact.update(dt);
   }
 
+  /**
+   * Section-complete celebration: little spark fountains rippling along both
+   * rails of the finished section, one after another (start → end).
+   */
+  celebrate(track: RailTrack, startDist: number, endDist: number): void {
+    const FOUNTAINS = 8;
+    for (let i = 0; i < FOUNTAINS; i++) {
+      const d = startDist + ((i + 0.5) / FOUNTAINS) * (endDist - startDist);
+      setTimeout(() => {
+        const tp = track.getTrackPoint(d);
+        for (const side of [-1, 1]) {
+          const p = tp.position.clone().addScaledVector(tp.right, side * 0.8);
+          this.sparks.burst(p, 14);
+        }
+      }, i * 70);
+    }
+  }
+
   /** Stop sparks and glow immediately (e.g. on restart) */
   stop(): void {
     this.sparks.stopEmitting();

@@ -19,6 +19,7 @@ import { RailGrinder } from './world/RailGrinder';
 import { DayNightCycle } from './world/DayNightCycle';
 import { Weather } from './world/Weather';
 import { GrindEffects } from './effects/GrindEffects';
+import { GroundMist } from './world/GroundMist';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
 import { GuidedTutorial } from './ui/GuidedTutorial';
@@ -53,6 +54,7 @@ export class Game {
   private environment!: Environment;
   private dayNight: DayNightCycle;
   private grindEffects: GrindEffects; // sparks, work lights, contact glow
+  private groundMist: GroundMist;
   private audio: AudioManager;
   private trackMap: TrackMap;
   private floatingScore: FloatingScore;
@@ -155,6 +157,20 @@ export class Game {
   /** Total length of the current track spline, in metres */
   private get trackLength(): number { return this.track.totalLength; }
 
+  /** World position of the grinder (lighting/shadows/mist follow this) */
+  private grinderFocus(): THREE.Vector3 {
+    const d = Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition));
+    return this._focus.copy(this.track.getTrackPoint(d).position);
+  }
+  private _focus = new THREE.Vector3();
+
+  /** Sky, sun, fog, colour grade and ground mist — all follow time of day and the grinder */
+  private updateAtmosphere(dt: number): void {
+    const focus = this.grinderFocus();
+    this.dayNight.update(dt, this.engine.camera, focus);
+    this.groundMist.update(dt, focus, this.dayNight.fogColor, this.dayNight.currentName);
+  }
+
   constructor() {
     const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 
@@ -209,12 +225,17 @@ export class Game {
       this.engine.scene,
       this.engine.directionalLight,
       this.engine.ambientLight,
-      this.engine.renderer
+      this.engine.renderer,
+      { bloom: this.engine.bloom, grade: this.engine.grade },
     );
     this.dayNight.setGroundMesh(this.ground);
 
     // Sparks, work lights, contact glow
     this.grindEffects = new GrindEffects(this.engine.scene);
+
+    // Low-lying haze around the grinder (density/colour follow time of day)
+    this.groundMist = new GroundMist();
+    this.engine.scene.add(this.groundMist.group);
 
     // Audio
     this.audio = new AudioManager();
@@ -441,7 +462,7 @@ export class Game {
 
     if (this.inspectionPass) {
       this.handleInspectionPass(dt);
-      this.dayNight.update(dt);
+      this.updateAtmosphere(dt);
       this.grinder.update(dt);
       this.input.endFrame();
       return;
@@ -469,7 +490,7 @@ export class Game {
     this.handleGrinderMovement(dt);
     this.handleGrinding(dt);
     this.camera.update(dt, this.track, this.grinderPosition);
-    this.dayNight.update(dt);
+    this.updateAtmosphere(dt);
     this.grindEffects.update(dt);
     this.grinder.update(dt);
 
@@ -802,16 +823,20 @@ export class Game {
     const sectionFt = Math.round(GAME_SECTION_LENGTH * 3.281); // metres → feet
     this.trackRestoredFt += sectionFt;
 
-    // Flash all visual segments in this section and show them fully polished
-    const visualSegs = this.track.getSegmentsForSection(sectionIndex);
-    for (const vi of visualSegs) {
-      if (vi < this.track.leftSegments.length) {
-        this.track.leftSegments[vi].setGrindProgress(1);
-        this.track.rightSegments[vi].setGrindProgress(1);
-        this.track.leftSegments[vi].flashComplete();
-        this.track.rightSegments[vi].flashComplete();
-      }
-    }
+    // Celebration: the section turns polished, then a bright glint sweeps along
+    // it stretch by stretch while spark fountains ripple down both rails
+    const track = this.track; // capture: a restart may replace this.track mid-sweep
+    track.getSegmentsForSection(sectionIndex).forEach((vi, order) => {
+      if (vi >= track.leftSegments.length) return;
+      track.leftSegments[vi].setGrindProgress(1);
+      track.rightSegments[vi].setGrindProgress(1);
+      setTimeout(() => {
+        track.leftSegments[vi].flashComplete();
+        track.rightSegments[vi].flashComplete();
+      }, order * 110);
+    });
+    const sectionStart = track.sectionOffset + sectionIndex * GAME_SECTION_LENGTH;
+    this.grindEffects.celebrate(track, sectionStart, sectionStart + GAME_SECTION_LENGTH);
 
     // Floating score popup
     this.floatingScore.showSegmentComplete(sectionIndex + 1, stars, sectionFt);

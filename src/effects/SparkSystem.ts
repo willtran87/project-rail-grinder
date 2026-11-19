@@ -168,11 +168,34 @@ export class SparkSystem {
     }
   }
 
-  private emitSpark(ep: EmitPoint): void {
-    let spark: Spark | null = null;
-    for (const s of this.sparks) {
-      if (!s.alive) { spark = s; break; }
+  /**
+   * One-off celebratory fountain: `count` sparks shooting up and outward
+   * from `origin` (used when a section is completed).
+   */
+  burst(origin: THREE.Vector3, count: number): void {
+    for (let i = 0; i < count; i++) {
+      const spark = this.freeSpark();
+      if (!spark) return;
+      spark.alive = true;
+      spark.age = 0;
+      spark.maxAge = SPARK_LIFETIME * (0.7 + Math.random() * 0.6);
+      spark.position.copy(origin);
+      const a = Math.random() * Math.PI * 2;
+      const out = 0.5 + Math.random() * 1.5;
+      spark.velocity.set(Math.cos(a) * out, 4 + Math.random() * 4, Math.sin(a) * out);
     }
+  }
+
+  /** Find a spark slot that isn't in use (or null if all 800 are flying) */
+  private freeSpark(): Spark | null {
+    for (const s of this.sparks) {
+      if (!s.alive) return s;
+    }
+    return null;
+  }
+
+  private emitSpark(ep: EmitPoint): void {
+    const spark = this.freeSpark();
     if (!spark) return;
 
     spark.alive = true;

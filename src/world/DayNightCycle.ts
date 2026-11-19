@@ -3,111 +3,120 @@
  *
  * Key principles from pixel art games:
  * - Shadows are NEVER gray — they shift to complementary hues
- * - Fog matches the sky color to create atmospheric cohesion
+ * - Fog matches the sky's horizon colour so distant things melt into the sky
  * - Each time of day has a distinct emotional color palette
+ *
+ * Each preset drives: sky dome (gradient, sun/moon, stars), fog, sun and
+ * ambient light, exposure, ground tint, colour grade, and bloom strength.
  *
  * Inspired by: Firewatch, A Short Hike, Journey, Proteus
  */
 
 import * as THREE from 'three';
+import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SkyDome } from './SkyDome';
+import type { GradeUniforms } from '../core/Engine';
 
 interface TimePreset {
   name: string;
-  skyColor: THREE.Color;
-  fogColor: THREE.Color;
+  // Sky dome
+  zenithColor: THREE.Color;
+  horizonColor: THREE.Color;      // also used as the fog colour (seamless horizon)
+  skySunColor: THREE.Color;       // colour of the visible sun/moon disc + halo
+  sunSize: number;                // cosine of disc radius (closer to 1 = smaller)
+  sunGlow: number;                // halo strength
+  stars: number;                  // 0..1
+  // Fog
   fogNear: number;
   fogFar: number;
+  // Lighting
   sunColor: THREE.Color;
   sunIntensity: number;
-  sunPosition: THREE.Vector3;
+  sunDirection: THREE.Vector3;    // direction TOWARD the sun (normalised on use)
   ambientSkyColor: THREE.Color;   // light from above
   ambientGroundColor: THREE.Color; // bounce light from ground (colored shadows)
   ambientIntensity: number;
   exposure: number;
   groundColor: THREE.Color;       // tint for ground plane
-  foliageColor: THREE.Color;      // tint for trees
+  // Post-processing
+  gradeLift: THREE.Color;         // tint added to shadows
+  gradeGain: THREE.Color;         // tint multiplied into highlights
+  saturation: number;
+  contrast: number;
+  bloomStrength: number;
 }
+
+const c = (hex: number) => new THREE.Color(hex);
 
 const PRESETS: Record<string, TimePreset> = {
   dawn: {
     name: 'DAWN',
-    skyColor: new THREE.Color(0x4a6e8a),
-    fogColor: new THREE.Color(0xd8c8a0),  // golden haze
-    fogNear: 40,
-    fogFar: 200,
-    sunColor: new THREE.Color(0xffaa66),
-    sunIntensity: 0.9,
-    sunPosition: new THREE.Vector3(-30, 6, 20),
-    ambientSkyColor: new THREE.Color(0x8cb4c8),
-    ambientGroundColor: new THREE.Color(0x6b5530), // warm amber bounce
-    ambientIntensity: 0.6,
-    exposure: 1.1,
-    groundColor: new THREE.Color(0xc8a050), // golden ochre
-    foliageColor: new THREE.Color(0x88a848),
+    zenithColor: c(0x3a5f8f), horizonColor: c(0xe8c898), skySunColor: c(0xffb070),
+    sunSize: 0.9990, sunGlow: 0.7, stars: 0,
+    fogNear: 40, fogFar: 220,
+    sunColor: c(0xffaa66), sunIntensity: 0.9, sunDirection: new THREE.Vector3(-0.8, 0.18, 0.55),
+    ambientSkyColor: c(0x8cb4c8), ambientGroundColor: c(0x6b5530), ambientIntensity: 1.0,
+    exposure: 1.25, groundColor: c(0xc8a050),
+    gradeLift: c(0x05030c), gradeGain: c(0xfff4e6), saturation: 1.05, contrast: 1.03,
+    bloomStrength: 0.5,
   },
   day: {
     name: 'DAY',
-    skyColor: new THREE.Color(0x58b8e8),
-    fogColor: new THREE.Color(0xa8ddf0),  // hazy blue
-    fogNear: 80,
-    fogFar: 350,
-    sunColor: new THREE.Color(0xfff8f0),
-    sunIntensity: 1.4,
-    sunPosition: new THREE.Vector3(15, 30, 10),
-    ambientSkyColor: new THREE.Color(0x88aadd),
-    ambientGroundColor: new THREE.Color(0x667755), // green bounce from grass
-    ambientIntensity: 0.7,
-    exposure: 1.2,
-    groundColor: new THREE.Color(0x4a7a3a), // vivid green
-    foliageColor: new THREE.Color(0x48a838),
+    zenithColor: c(0x1f66c8), horizonColor: c(0xbfe4f4), skySunColor: c(0xfff4e0),
+    sunSize: 0.9993, sunGlow: 0.35, stars: 0,
+    fogNear: 80, fogFar: 380,
+    sunColor: c(0xfff8f0), sunIntensity: 1.4, sunDirection: new THREE.Vector3(0.4, 0.8, 0.3),
+    ambientSkyColor: c(0x88aadd), ambientGroundColor: c(0x667755), ambientIntensity: 1.0,
+    exposure: 1.35, groundColor: c(0x4a7a3a),
+    gradeLift: c(0x000004), gradeGain: c(0xfffcf6), saturation: 1.08, contrast: 1.04,
+    bloomStrength: 0.3,
   },
   dusk: {
     name: 'DUSK',
-    skyColor: new THREE.Color(0x870734),
-    fogColor: new THREE.Color(0xe8a060),  // warm amber fog
-    fogNear: 30,
-    fogFar: 180,
-    sunColor: new THREE.Color(0xef6a3a),
-    sunIntensity: 0.8,
-    sunPosition: new THREE.Vector3(40, 5, -15),
-    ambientSkyColor: new THREE.Color(0x684971), // dusty purple
-    ambientGroundColor: new THREE.Color(0x4a2c17), // deep umber
-    ambientIntensity: 0.5,
-    exposure: 1.0,
-    groundColor: new THREE.Color(0x8b5e3c), // warm brown
-    foliageColor: new THREE.Color(0x6b8c42),
+    // Softer than before: indigo overhead fading to amber at the horizon
+    zenithColor: c(0x2b2350), horizonColor: c(0xe89a62), skySunColor: c(0xff7a40),
+    sunSize: 0.9986, sunGlow: 0.9, stars: 0,
+    fogNear: 30, fogFar: 200,
+    sunColor: c(0xff7a45), sunIntensity: 1.3, sunDirection: new THREE.Vector3(0.9, 0.16, -0.35),
+    ambientSkyColor: c(0xb48aa8), ambientGroundColor: c(0x6a4428), ambientIntensity: 1.25,
+    exposure: 1.3, groundColor: c(0xa8784c),
+    gradeLift: c(0x0a020e), gradeGain: c(0xfff0dc), saturation: 1.1, contrast: 1.05,
+    bloomStrength: 0.6,
   },
   night: {
     name: 'NIGHT',
-    skyColor: new THREE.Color(0x0d0d3f),
-    fogColor: new THREE.Color(0x0a0a1e),  // deep blue-black
-    fogNear: 20,
-    fogFar: 120,
-    sunColor: new THREE.Color(0x6688cc),  // moonlight
-    sunIntensity: 0.3,
-    sunPosition: new THREE.Vector3(-15, 20, 10),
-    ambientSkyColor: new THREE.Color(0x1a2240), // deep indigo
-    ambientGroundColor: new THREE.Color(0x0a1015), // near-black teal
-    ambientIntensity: 0.25,
-    exposure: 0.9,
-    groundColor: new THREE.Color(0x1e3a2a), // dark teal-green
-    foliageColor: new THREE.Color(0x3a6b5c),
+    zenithColor: c(0x050818), horizonColor: c(0x141c34), skySunColor: c(0xc8d4ff), // moon
+    sunSize: 0.9995, sunGlow: 0.25, stars: 1,
+    fogNear: 20, fogFar: 140,
+    sunColor: c(0x6688cc), sunIntensity: 0.3, sunDirection: new THREE.Vector3(-0.5, 0.65, 0.35),
+    ambientSkyColor: c(0x23305a), ambientGroundColor: c(0x0c141c), ambientIntensity: 0.35,
+    exposure: 1.05, groundColor: c(0x1e3a2a),
+    gradeLift: c(0x000610), gradeGain: c(0xeaf2ff), saturation: 0.92, contrast: 1.08,
+    bloomStrength: 0.85,
   },
 };
 
 const TIME_ORDER = ['dawn', 'day', 'dusk', 'night'];
+const SUN_DISTANCE = 80; // how far the shadow-casting light sits from the focus point
+
+export interface PostFX {
+  bloom: UnrealBloomPass;
+  grade: GradeUniforms;
+}
 
 export class DayNightCycle {
   private scene: THREE.Scene;
   private sun: THREE.DirectionalLight;
   private ambient: THREE.HemisphereLight;
   private renderer: THREE.WebGLRenderer;
+  private post: PostFX | null;
   private groundMesh: THREE.Mesh | null = null;
+  readonly sky: SkyDome;
 
   private currentIndex: number = 1; // start at day
   private targetPreset: TimePreset;
-  private currentPreset: TimePreset;
   private transitionProgress: number = 1;
+  private sunDir = new THREE.Vector3();
 
   currentName: string = 'DAY';
 
@@ -115,14 +124,21 @@ export class DayNightCycle {
     scene: THREE.Scene,
     sun: THREE.DirectionalLight,
     ambient: THREE.HemisphereLight,
-    renderer: THREE.WebGLRenderer
+    renderer: THREE.WebGLRenderer,
+    post: PostFX | null = null,
   ) {
     this.scene = scene;
     this.sun = sun;
     this.ambient = ambient;
     this.renderer = renderer;
+    this.post = post;
+
+    this.sky = new SkyDome();
+    scene.add(this.sky.mesh);
+    // The light's target must be in the scene so we can move it with the grinder
+    scene.add(this.sun.target);
+
     this.targetPreset = PRESETS[TIME_ORDER[this.currentIndex]];
-    this.currentPreset = { ...this.targetPreset };
     this.applyPreset(this.targetPreset);
   }
 
@@ -156,52 +172,81 @@ export class DayNightCycle {
     return this.currentIndex === 2;
   }
 
-  update(dt: number): void {
+  /** Current fog/horizon colour (used by the ground mist) */
+  get fogColor(): THREE.Color {
+    return (this.scene.fog as THREE.Fog).color;
+  }
+
+  /** Night-ness 0..1 as presets blend (for effects that should fade in at night) */
+  get starAmount(): number {
+    return this.sky.uniforms.uStars.value;
+  }
+
+  /**
+   * @param camera - the sky dome is centred on it
+   * @param focus - where the action is (the grinder); the sun's shadow box follows it
+   *                so shadows stay sharp along the whole track, not just near the start
+   */
+  update(dt: number, camera: THREE.Camera, focus: THREE.Vector3): void {
+    this.sky.update(dt, camera.position);
+
+    // Shadow-casting light sits at a fixed direction from the focus point
+    this.sun.position.copy(focus).addScaledVector(this.sunDir, SUN_DISTANCE);
+    this.sun.target.position.copy(focus);
+    this.sun.target.updateMatrixWorld();
+
     if (this.transitionProgress >= 1) return;
-
     this.transitionProgress = Math.min(1, this.transitionProgress + dt * 0.4);
-    const t = this.smoothstep(this.transitionProgress);
-    const p = this.targetPreset;
+    this.blendToward(this.targetPreset, this.smoothstep(this.transitionProgress));
+  }
 
-    // Lerp all values
-    (this.scene.background as THREE.Color).lerp(p.skyColor, t);
+  /** Move every value a fraction t of the way toward preset p */
+  private blendToward(p: TimePreset, t: number): void {
+    const sky = this.sky.uniforms;
+    sky.uZenith.value.lerp(p.zenithColor, t);
+    sky.uHorizon.value.lerp(p.horizonColor, t);
+    sky.uGround.value.lerp(p.groundColor.clone().multiplyScalar(0.6), t);
+    sky.uSunColor.value.lerp(p.skySunColor, t);
+    sky.uSunSize.value += (p.sunSize - sky.uSunSize.value) * t;
+    sky.uSunGlow.value += (p.sunGlow - sky.uSunGlow.value) * t;
+    sky.uStars.value += (p.stars - sky.uStars.value) * t;
+    this.sunDir.lerp(p.sunDirection.clone().normalize(), t).normalize();
+    sky.uSunDir.value.copy(this.sunDir);
+
+    (this.scene.background as THREE.Color).lerp(p.horizonColor, t);
     const fog = this.scene.fog as THREE.Fog;
-    fog.color.lerp(p.fogColor, t);
+    fog.color.lerp(p.horizonColor, t);
     fog.near += (p.fogNear - fog.near) * t;
     fog.far += (p.fogFar - fog.far) * t;
 
     this.sun.color.lerp(p.sunColor, t);
     this.sun.intensity += (p.sunIntensity - this.sun.intensity) * t;
-    this.sun.position.lerp(p.sunPosition, t);
 
     this.ambient.color.lerp(p.ambientSkyColor, t);
     this.ambient.groundColor.lerp(p.ambientGroundColor, t);
     this.ambient.intensity += (p.ambientIntensity - this.ambient.intensity) * t;
 
-    // Exposure
-    this.renderer.toneMappingExposure +=
-      (p.exposure - this.renderer.toneMappingExposure) * t;
+    this.renderer.toneMappingExposure += (p.exposure - this.renderer.toneMappingExposure) * t;
 
-    // Ground tint
     if (this.groundMesh) {
-      const mat = this.groundMesh.material as THREE.MeshStandardMaterial;
-      mat.color.lerp(p.groundColor, t);
+      (this.groundMesh.material as THREE.MeshStandardMaterial).color.lerp(p.groundColor, t);
+    }
+
+    if (this.post) {
+      const g = this.post.grade;
+      g.uLift.value.lerp(p.gradeLift, t);
+      g.uGain.value.lerp(p.gradeGain, t);
+      g.uSaturation.value += (p.saturation - g.uSaturation.value) * t;
+      g.uContrast.value += (p.contrast - g.uContrast.value) * t;
+      this.post.bloom.strength += (p.bloomStrength - this.post.bloom.strength) * t;
     }
   }
 
+  /** Jump straight to a preset (no transition) */
   private applyPreset(p: TimePreset): void {
-    (this.scene.background as THREE.Color).copy(p.skyColor);
-    const fog = this.scene.fog as THREE.Fog;
-    fog.color.copy(p.fogColor);
-    fog.near = p.fogNear;
-    fog.far = p.fogFar;
-    this.sun.color.copy(p.sunColor);
-    this.sun.intensity = p.sunIntensity;
-    this.sun.position.copy(p.sunPosition);
-    this.ambient.color.copy(p.ambientSkyColor);
-    this.ambient.groundColor.copy(p.ambientGroundColor);
-    this.ambient.intensity = p.ambientIntensity;
-    this.renderer.toneMappingExposure = p.exposure;
+    // Blending with t = 1 copies every value exactly
+    this.sunDir.copy(p.sunDirection).normalize();
+    this.blendToward(p, 1);
   }
 
   private smoothstep(t: number): number {

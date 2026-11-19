@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import type { RailTrack } from '../rail/RailTrack';
+import { createBallastGeometry, createBallastMaterial } from './trackBed';
 
 const ADJACENT_OFFSET = 5; // meters to the side
 const GAUGE_HALF = 0.8;
@@ -179,11 +180,12 @@ export class PassingTrain {
 
     const railMat = new THREE.MeshStandardMaterial({ color: 0x7a7a88, metalness: 0.7, roughness: 0.4 });
     const tieMat = new THREE.MeshStandardMaterial({ color: 0x4a3828, roughness: 0.9 });
-    const ballastMat = new THREE.MeshStandardMaterial({ color: 0x707070, roughness: 1 });
-    const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x686868, roughness: 1 });
+    // Same gravel bed as the main track, slightly darker (less maintained line)
+    const ballastMat = createBallastMaterial(0xa8a49c);
+    const shoulderMat = createBallastMaterial(0x8e8a82);
 
-    const ballastGeo = new THREE.BoxGeometry(3.2, 0.25, 5);
-    const shoulderGeo = new THREE.BoxGeometry(1.0, 0.15, 5);
+    const ballastGeo = createBallastGeometry(2.8, 4.4, 0.4, 5.3);
+    const shoulderGeo = createBallastGeometry(1.0, 1.4, 0.12, 5.3);
     const railGeo = new THREE.BoxGeometry(0.07, 0.2, 5);
     const tieGeo = new THREE.BoxGeometry(2.6, 0.12, 0.18);
 
@@ -221,13 +223,13 @@ export class PassingTrain {
       tmpPos.copy(tp.position).addScaledVector(tp.right, ADJACENT_OFFSET);
 
       // Ballast
-      tmpPos.y = -0.45;
+      tmpPos.y = -0.33; // top of the ballast bed
       ballastInst.setMatrixAt(i, tmpMat4.compose(tmpPos, tmpQuat, tmpScale));
 
       // Shoulders
       for (const side of [-1, 1]) {
-        const sPos = tmpPos.clone().addScaledVector(tmpRight, side * 2.0);
-        sPos.y = -0.5;
+        const sPos = tmpPos.clone().addScaledVector(tmpRight, side * 2.6);
+        sPos.y = -0.52;
         shoulderInst.setMatrixAt(shoulderIdx++, tmpMat4.compose(sPos, tmpQuat, tmpScale));
       }
 

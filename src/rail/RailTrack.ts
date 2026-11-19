@@ -12,6 +12,8 @@
 import * as THREE from 'three';
 import { RailProfile } from './RailProfile';
 import { RailSegment } from './RailSegment';
+import { createBallastGeometry, createBallastMaterial } from '../world/trackBed';
+import { disposeObject3D } from '../core/dispose';
 
 const GAUGE_WIDTH = 1.6;
 export const VISUAL_SEGMENT_LENGTH = 5; // must match RailSegment.SEGMENT_LENGTH
@@ -29,6 +31,8 @@ export interface TrackPoint {
 
 export class RailTrack {
   readonly group: THREE.Group;
+  /** Ties + ballast meshes, freed in dispose() */
+  private bedMeshes: THREE.Object3D[] = [];
   readonly leftSegments: RailSegment[] = [];
   readonly rightSegments: RailSegment[] = [];
   readonly leftProfiles: RailProfile[] = [];
@@ -215,68 +219,75 @@ export class RailTrack {
     }
   }
 
-  /** Place ties along the curve */
+  /**
+   * Place ties along the curve. One InstancedMesh = one draw call for all
+   * ~700 ties (instead of 700 separate meshes). Each tie gets a slightly
+   * different wood tone so the track doesn't look copy-pasted.
+   */
   private buildTies(): void {
     const tieGeometry = new THREE.BoxGeometry(GAUGE_WIDTH + 1.0, 0.12, 0.18);
-    const tieMaterial = new THREE.MeshStandardMaterial({
-      color: 0x5a4430,
-      roughness: 0.9,
-      metalness: 0.0,
-          });
+    const tieMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.0 });
 
     const tieCount = Math.floor(this.totalLength / TIE_SPACING);
+    const ties = new THREE.InstancedMesh(tieGeometry, tieMaterial, tieCount);
+    const matrix = new THREE.Matrix4();
+    const basis = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const one = new THREE.Vector3(1, 1, 1);
+    const tone = new THREE.Color();
     for (let i = 0; i < tieCount; i++) {
-      const dist = i * TIE_SPACING;
-      const tp = this.getTrackPoint(dist);
-
-      const tie = new THREE.Mesh(tieGeometry, tieMaterial);
-      tie.position.copy(tp.position);
-      tie.position.y -= 0.30;
-
+      const tp = this.getTrackPoint(i * TIE_SPACING);
+      pos.copy(tp.position);
+      pos.y -= 0.30;
       // Align tie perpendicular to track direction with banking
-      const quat = new THREE.Quaternion();
-      const m = new THREE.Matrix4().makeBasis(tp.right, tp.up, tp.forward);
-      quat.setFromRotationMatrix(m);
-      tie.quaternion.copy(quat);
-
-      tie.receiveShadow = true;
-      this.group.add(tie);
+      quat.setFromRotationMatrix(basis.makeBasis(tp.right, tp.up, tp.forward));
+      ties.setMatrixAt(i, matrix.compose(pos, quat, one));
+      // Weathered wood: brown with random lightness / greyness
+      tone.setHSL(0.07 + Math.random() * 0.03, 0.22 + Math.random() * 0.15, 0.2 + Math.random() * 0.1, THREE.SRGBColorSpace);
+      ties.setColorAt(i, tone);
     }
+    ties.instanceMatrix.needsUpdate = true;
+    ties.receiveShadow = true;
+    this.group.add(ties);
+    this.bedMeshes.push(ties);
   }
 
-  /** Build ballast as a series of short sections following the curve */
+  /**
+   * Ballast: the sloped bed of crushed stone under the ties, built from
+   * textured trapezoid "prism" pieces that follow the curve (one draw call).
+   */
   private buildBallast(): void {
-    const ballastMaterial = new THREE.MeshStandardMaterial({
-      color: 0x777777,
-      roughness: 1.0,
-      metalness: 0.0,
-          });
+    const chunkLength = 5;            // metres per piece
+    const pieceLength = chunkLength + 0.3; // slight overlap hides seams on curves
+    const geometry = createBallastGeometry(GAUGE_WIDTH + 1.4, GAUGE_WIDTH + 3.0, 0.4, pieceLength);
+    const material = createBallastMaterial(0xc8c4bc);
 
-    const chunkLength = 5; // meters per ballast chunk
     const chunkCount = Math.floor(this.totalLength / chunkLength);
-    const ballastGeometry = new THREE.BoxGeometry(GAUGE_WIDTH + 2.0, 0.25, chunkLength);
-
+    const ballast = new THREE.InstancedMesh(geometry, material, chunkCount);
+    const matrix = new THREE.Matrix4();
+    const basis = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const one = new THREE.Vector3(1, 1, 1);
     for (let i = 0; i < chunkCount; i++) {
-      const dist = i * chunkLength + chunkLength / 2;
-      const tp = this.getTrackPoint(dist);
-
-      const ballast = new THREE.Mesh(ballastGeometry, ballastMaterial);
-      ballast.position.copy(tp.position);
-      ballast.position.y -= 0.45;
-
-      const quat = new THREE.Quaternion();
-      const m = new THREE.Matrix4().makeBasis(tp.right, tp.up, tp.forward);
-      quat.setFromRotationMatrix(m);
-      ballast.quaternion.copy(quat);
-
-      ballast.receiveShadow = true;
-      this.group.add(ballast);
+      const tp = this.getTrackPoint(i * chunkLength + chunkLength / 2);
+      pos.copy(tp.position);
+      pos.y -= 0.33; // top of the stones just under the tie tops
+      quat.setFromRotationMatrix(basis.makeBasis(tp.right, tp.up, tp.forward));
+      ballast.setMatrixAt(i, matrix.compose(pos, quat, one));
     }
+    ballast.instanceMatrix.needsUpdate = true;
+    ballast.receiveShadow = true;
+    this.group.add(ballast);
+    this.bedMeshes.push(ballast);
   }
 
   dispose(): void {
     for (const seg of [...this.leftSegments, ...this.rightSegments]) {
       seg.dispose();
     }
+    // Ties and ballast (instanced meshes this track owns)
+    for (const m of this.bedMeshes) disposeObject3D(m);
   }
 }

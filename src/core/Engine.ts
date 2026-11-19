@@ -8,10 +8,51 @@
  */
 
 import * as THREE from 'three';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 /** How many times to divide the screen resolution for the pixel look.
  *  3 = each "pixel" is 3x3 screen pixels. Adjust for more/less chunky. */
 const PIXEL_SCALE = 2; // mild pixelation — detail readable but stylized
+
+/**
+ * Final full-screen shader: takes the low-res HDR scene (with bloom already
+ * added), applies tone mapping + sRGB output, then a simple colour grade:
+ *   lift  = colour added to the shadows   (e.g. cool blue at night)
+ *   gain  = colour multiplied into highlights (e.g. warm gold at dusk)
+ *   saturation / contrast = overall punch
+ * DayNightCycle changes these per time of day.
+ */
+const OUTPUT_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const OUTPUT_FRAGMENT = /* glsl */ `
+  uniform sampler2D tDiffuse;
+  uniform vec3 uLift;
+  uniform vec3 uGain;
+  uniform float uSaturation;
+  uniform float uContrast;
+  varying vec2 vUv;
+  void main() {
+    gl_FragColor = vec4(texture2D(tDiffuse, vUv).rgb, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    vec3 c = gl_FragColor.rgb;
+    c = c * uGain + uLift * (1.0 - c);
+    float luma = dot(c, vec3(0.299, 0.587, 0.114));
+    c = mix(vec3(luma), c, uSaturation);
+    c = (c - 0.5) * uContrast + 0.5;
+    gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+  }
+`;
+
+/** Colour-grade controls (see OUTPUT_FRAGMENT) */
+export interface GradeUniforms {
+  uLift: { value: THREE.Color };
+  uGain: { value: THREE.Color };
+  uSaturation: { value: number };
+  uContrast: { value: number };
+}
 
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
@@ -27,6 +68,13 @@ export class Engine {
   private renderTarget: THREE.WebGLRenderTarget;
   private pixelQuadScene: THREE.Scene;
   private pixelQuadCamera: THREE.OrthographicCamera;
+
+  /** Glow around anything brighter than white (sparks, sun, lights). Tuned per time of day. */
+  readonly bloom: UnrealBloomPass;
+  /** Turn bloom off on slow machines (a future graphics-quality setting) */
+  bloomEnabled = true;
+  /** Colour grade uniforms. Tuned per time of day by DayNightCycle. */
+  readonly grade: GradeUniforms;
 
   private updateCallbacks: Array<(dt: number) => void> = [];
   private resizeHandler: () => void;
@@ -77,21 +125,37 @@ export class Engine {
     const lowW = Math.floor(window.innerWidth / PIXEL_SCALE);
     const lowH = Math.floor(window.innerHeight / PIXEL_SCALE);
 
+    // HalfFloat (not 8-bit) so colours brighter than white survive until tone
+    // mapping — that's what lets sparks and the sun glow instead of clipping.
     this.renderTarget = new THREE.WebGLRenderTarget(lowW, lowH, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
       format: THREE.RGBAFormat,
-      type: THREE.UnsignedByteType,
+      type: THREE.HalfFloatType,
       depthBuffer: true,
       stencilBuffer: false,
     });
 
-    // Fullscreen quad to display the pixelated render
+    // Bloom runs at the same low resolution, so the glow stays pixel-art chunky.
+    // threshold: only linear brightness above ~0.9 glows (sparks, sun, lamps)
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(lowW, lowH), 0.4, 0.5, 0.9);
+
+    // Fullscreen quad to display the pixelated render (tone map + colour grade)
     this.pixelQuadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.pixelQuadScene = new THREE.Scene();
     const quadGeo = new THREE.PlaneGeometry(2, 2);
-    const quadMat = new THREE.MeshBasicMaterial({
-      map: this.renderTarget.texture,
+    this.grade = {
+      uLift: { value: new THREE.Color(0, 0, 0) },
+      uGain: { value: new THREE.Color(1, 1, 1) },
+      uSaturation: { value: 1 },
+      uContrast: { value: 1 },
+    };
+    const quadMat = new THREE.ShaderMaterial({
+      uniforms: { tDiffuse: { value: this.renderTarget.texture }, ...this.grade },
+      vertexShader: OUTPUT_VERTEX,
+      fragmentShader: OUTPUT_FRAGMENT,
+      depthTest: false,
+      depthWrite: false,
     });
     const quad = new THREE.Mesh(quadGeo, quadMat);
     this.pixelQuadScene.add(quad);
@@ -105,13 +169,15 @@ export class Engine {
     this.directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
     this.directionalLight.position.set(10, 20, 10);
     this.directionalLight.castShadow = true;
-    this.directionalLight.shadow.mapSize.set(2048, 2048);
+    // 1024 is plenty: the scene renders at half resolution, and the shadow box
+    // follows the grinder (DayNightCycle) so it only needs to cover ~90m around it
+    this.directionalLight.shadow.mapSize.set(1024, 1024);
     this.directionalLight.shadow.camera.near = 1;
     this.directionalLight.shadow.camera.far = 200;
-    this.directionalLight.shadow.camera.left = -60;
-    this.directionalLight.shadow.camera.right = 60;
-    this.directionalLight.shadow.camera.top = 60;
-    this.directionalLight.shadow.camera.bottom = -60;
+    this.directionalLight.shadow.camera.left = -45;
+    this.directionalLight.shadow.camera.right = 45;
+    this.directionalLight.shadow.camera.top = 45;
+    this.directionalLight.shadow.camera.bottom = -45;
     this.directionalLight.shadow.bias = -0.002;
     this.directionalLight.shadow.normalBias = 0.02;
     this.scene.add(this.directionalLight);
@@ -148,6 +214,11 @@ export class Engine {
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
 
+    // Step 1b: Add bloom (glow) on top of the low-res image, in place
+    if (this.bloomEnabled) {
+      this.bloom.render(this.renderer, null as unknown as THREE.WebGLRenderTarget, this.renderTarget, dt, false);
+    }
+
     // Step 2: Draw the low-res texture to the screen (upscaled with nearest filter)
     this.renderer.setRenderTarget(null);
     this.renderer.clear();
@@ -166,6 +237,7 @@ export class Engine {
     const lowW = Math.floor(w / PIXEL_SCALE);
     const lowH = Math.floor(h / PIXEL_SCALE);
     this.renderTarget.setSize(lowW, lowH);
+    this.bloom.setSize(lowW, lowH);
   }
 
   dispose(): void {

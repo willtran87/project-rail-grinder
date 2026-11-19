@@ -29,7 +29,10 @@ src/
 │   ├── PassingTrain.ts      # Freight train on adjacent track + InstancedMesh track
 │   ├── RevenueTrainDeadline.ts # Revenue-train countdown + missed-window penalty
 │   ├── Environment.ts       # Trees, rocks, grass, terrain, mountains, stars
-│   ├── DayNightCycle.ts     # Time-of-day lighting with color palettes
+│   ├── DayNightCycle.ts     # Time-of-day presets: sky, fog, light, colour grade, bloom
+│   ├── SkyDome.ts           # Gradient sky shader with sun/moon and stars
+│   ├── GroundMist.ts        # Drifting low haze, clear near the grinder
+│   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
 │   ├── Weather.ts           # Rain particle system
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
@@ -89,7 +92,14 @@ Game.ts (orchestrator)
 ## Key Design Decisions
 
 ### Pixel Art Pipeline
-The scene renders to a WebGLRenderTarget at 1/2 screen resolution, then displays on a fullscreen quad with `NearestFilter`. This creates a stylized pixel look without changing any geometry.
+The scene renders to a HalfFloat WebGLRenderTarget at 1/2 screen resolution, then displays on a fullscreen quad with `NearestFilter`. This creates a stylized pixel look without changing any geometry.
+
+Between those steps, `Engine` adds two post-processing passes, both at the low resolution so they stay pixel-chunky:
+- **Bloom** (`UnrealBloomPass`): anything brighter than white glows — sparks, the sun, work lights, the completion glint. HalfFloat is what lets values go above 1.0 instead of clipping. `engine.bloomEnabled` turns it off.
+- **Colour grade** (in the output shader): tone mapping, then lift/gain/saturation/contrast. `DayNightCycle` sets these (plus bloom strength) per time of day.
+
+### Sky, Fog and Shadows
+`SkyDome` is a shader-drawn gradient sphere with a sun/moon disc and twinkling stars (night only). Fog uses the sky’s horizon colour so distant scenery melts into the sky. `GroundMist` adds drifting haze layers that are clear around the grinder and thicken with distance. The sun’s shadow box follows the grinder, so shadows work along the whole track (it used to be fixed near the start).
 
 ### Curved Track via CatmullRom Spline
 The track is a `CatmullRomCurve3` with 1000 arc-length subdivisions. Everything — rail segments, ties, ballast, grinder cars, passing trains, scenery — positions itself by querying `getTrackPoint(distance)` which returns position + forward + right + up + banking angle.
@@ -145,5 +155,6 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 - **Target**: 60fps on modern hardware at 1080p
 - **Main bottleneck**: `RailSegment.rebuildMesh()` during grinding (ExtrudeGeometry rebuild)
 - **Light count**: 7 total (1 directional, 1 hemisphere, 4 work lights, 1 spark light)
-- **Draw calls**: ~50-80 (instanced scenery + train geometry + rail segments)
+- **Shadows**: 1024² map covering ±45m around the grinder — the most expensive pass now that it covers the train
+- **Draw calls**: ties and ballast are instanced too (one call each instead of ~800)
 - **Particle count**: 800 sparks + 2000 rain (when active)

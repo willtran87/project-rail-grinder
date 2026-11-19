@@ -8,6 +8,7 @@
 
 import * as THREE from 'three';
 import type { RailTrack } from '../rail/RailTrack';
+import { createBallastGeometry, createBallastMaterial } from './trackBed';
 
 export class Environment {
   readonly group: THREE.Group;
@@ -30,7 +31,7 @@ export class Environment {
     this.addTelegraphPoles();
     this.addTrackSideDetails();
     this.addDistantMountains();
-    this.addStars();
+    // (stars now come from the SkyDome shader, which fades them in only at night)
   }
 
   private trackCenterX(z: number): number {
@@ -125,8 +126,9 @@ export class Environment {
   // ---- TRACKSIDE (uses actual spline) ----
   private addTracksideGroundCover(): void {
     const trackLen = this.track ? this.track.totalLength : 360;
-    const gravelMat = new THREE.MeshStandardMaterial({ color: 0x888880, roughness: 1 });
-    const ballastGeo = new THREE.BoxGeometry(1.5, 0.04, 2.3);
+    // Continuous gravel walkways either side of the track (pieces overlap, no gaps)
+    const gravelMat = createBallastMaterial(0x9a958c);
+    const ballastGeo = createBallastGeometry(1.4, 1.8, 0.1, 2.7);
 
     // Instanced gravel shoulders
     const count = Math.floor(trackLen / 2.5) * 2;
@@ -137,7 +139,7 @@ export class Environment {
       for (const side of [-1, 1]) {
         const pt = this.getTrackSidePoint(d, side * 2.8);
         mat4.makeRotationY(pt.angle);
-        mat4.setPosition(pt.x, pt.y + 0.02, pt.z);
+        mat4.setPosition(pt.x, pt.y + 0.08, pt.z); // prism top sits just above the grass
         inst.setMatrixAt(idx++, mat4);
       }
     }

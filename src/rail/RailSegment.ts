@@ -29,11 +29,20 @@ const STEEL_COLOR = new THREE.Color(0xc8c8d0);         // bright polished steel
 const STEEL_EMISSIVE = new THREE.Color(0x0a0a10);      // subtle cool sheen
 const GRINDING_EMISSIVE = new THREE.Color(0x221100);
 const COMPLETE_FLASH = new THREE.Color(0xffffff);       // bright flash on completion
+const FLASH_TIME = 0.6;                                 // seconds the completion flash takes to fade
+
+// The polished running band: a thin bright strip along the top of the rail
+// where the wheels (and the grindstones) touch. Shared geometry for all rails.
+const SHINE_WIDTH = 0.045;   // metres (~45mm, a typical running band)
+const SHINE_BASE_GLOW = 0.35;
+let shineGeometry: THREE.PlaneGeometry | null = null;
 
 export class RailSegment {
   readonly mesh: THREE.Mesh;
   private profile: RailProfile;
   readonly material: THREE.MeshStandardMaterial;
+  private shine: THREE.Mesh;
+  private shineMaterial: THREE.MeshStandardMaterial;
   readonly length: number;
   readonly positionZ: number;
   private _grindProgress: number = 0;
@@ -58,6 +67,28 @@ export class RailSegment {
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
     this.mesh.position.z = positionZ;
+
+    // Running band: invisible on rusty rail, appears as the section is ground
+    if (!shineGeometry) {
+      shineGeometry = new THREE.PlaneGeometry(SHINE_WIDTH, SEGMENT_LENGTH);
+      shineGeometry.rotateX(-Math.PI / 2);                    // lie flat, facing up
+      shineGeometry.translate(0, 0.0015, SEGMENT_LENGTH / 2);  // on top of the head, along the extrusion
+    }
+    this.shineMaterial = new THREE.MeshStandardMaterial({
+      color: 0xeef2f8,
+      emissive: 0x9aa4b4,
+      emissiveIntensity: SHINE_BASE_GLOW,
+      metalness: 0.3,
+      roughness: 0.12,        // glossy: catches a sharp sun highlight
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      polygonOffset: true,    // avoid flickering against the rail top
+      polygonOffsetFactor: -2,
+    });
+    this.shine = new THREE.Mesh(shineGeometry, this.shineMaterial);
+    this.shine.visible = false;
+    this.mesh.add(this.shine);
   }
 
   get grindProgress(): number { return this._grindProgress; }
@@ -76,6 +107,11 @@ export class RailSegment {
   setGrindProgress(progress: number): void {
     this._grindProgress = Math.max(0, Math.min(1, progress));
     const t = this._grindProgress;
+
+    // Running band fades in over the second half of the transition
+    const band = Math.max(0, Math.min(1, (t - 0.35) / 0.65));
+    this.shineMaterial.opacity = band * 0.9;
+    this.shine.visible = band > 0.01;
 
     if (this.flashTimer > 0) return; // don't override flash
 
@@ -101,9 +137,13 @@ export class RailSegment {
 
   /** Flash bright on completion — call once, then update() handles the fade */
   flashComplete(): void {
-    this.flashTimer = 0.4;
+    this.flashTimer = FLASH_TIME;
     this.material.emissive.copy(COMPLETE_FLASH);
     this.material.emissiveIntensity = 1.5;
+    // Running band flares well past white so the bloom makes it glint
+    this.shine.visible = true;
+    this.shineMaterial.opacity = 1;
+    this.shineMaterial.emissiveIntensity = 4;
   }
 
   /** Call each frame to handle flash fade */
@@ -112,9 +152,12 @@ export class RailSegment {
       this.flashTimer -= dt;
       if (this.flashTimer <= 0) {
         this.flashTimer = 0;
+        this.shineMaterial.emissiveIntensity = SHINE_BASE_GLOW;
         this.setGrindProgress(this._grindProgress); // restore normal appearance
       } else {
-        this.material.emissiveIntensity = (this.flashTimer / 0.4) * 1.5;
+        const k = this.flashTimer / FLASH_TIME;
+        this.material.emissiveIntensity = k * 1.5;
+        this.shineMaterial.emissiveIntensity = SHINE_BASE_GLOW + k * 3.65;
       }
     }
   }
@@ -165,5 +208,6 @@ export class RailSegment {
   dispose(): void {
     this.mesh.geometry.dispose();
     this.material.dispose();
+    this.shineMaterial.dispose(); // shine geometry is shared by all rails, so it stays
   }
 }
