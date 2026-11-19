@@ -366,18 +366,18 @@ export class Game {
     let seed = 42;
     const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 
-    const offset = this.track.sectionOffset;
     for (let vi = 0; vi < totalVisual; vi++) {
       const viDist = vi * 5; // VISUAL_SEGMENT_LENGTH = 5
       const secIdx = this.track.getSectionIndex(viDist);
-      // Skip visual segments in the lead-in zone (before first section)
-      if (viDist < offset) continue;
-      // Skip visual segments past the last section
-      if (secIdx >= SEGMENT_COUNT) continue;
+      // Skip lead-in and run-out track (outside the scored sections)
+      if (secIdx < 0) continue;
       const jobSeverity = this.currentJob ? this.currentJob.defectSeverity : 0.6;
       // First 2 sections are trivially easy for onboarding
       const easyMult = (this.isFirstJob && secIdx < 2) ? 0.15 : 1.0;
-      const difficulty = (0.3 + (secIdx / SEGMENT_COUNT) * 0.7) * jobSeverity * easyMult;
+      // Severity ramps up along the route. DEFECT_SCALE sets overall difficulty:
+      // tuned so even the Easy job starts below the RQI 80 target.
+      const DEFECT_SCALE = 1.4;
+      const difficulty = (0.6 + (secIdx / SEGMENT_COUNT) * 0.4) * jobSeverity * DEFECT_SCALE * easyMult;
 
       // Pick DIFFERENT defect peaks for each rail independently
       for (const rail of ['left', 'right'] as const) {
@@ -424,17 +424,41 @@ export class Game {
     }
   }
 
+  /**
+   * Accuracy of a whole section: the worst "within tolerance" fraction across
+   * every visual segment in the section, on both rails. A section is only as
+   * good as its worst stretch of rail.
+   */
+  private getSectionAccuracy(sec: number): number {
+    let worst = 1;
+    for (const vi of this.track.getSegmentsForSection(sec)) {
+      for (const rail of ['left', 'right'] as const) {
+        const acc = this.track.getProfile(vi, rail).compare(this.targetProfile).withinTolerance;
+        if (acc < worst) worst = acc;
+      }
+    }
+    return worst;
+  }
+
+  /** Worst average deviation across every visual segment in a section, both rails */
+  private getSectionWorstDeviation(sec: number): number {
+    let worst = 0;
+    for (const vi of this.track.getSegmentsForSection(sec)) {
+      for (const rail of ['left', 'right'] as const) {
+        const dev = this.track.getProfile(vi, rail).compare(this.targetProfile).averageDeviation;
+        if (dev > worst) worst = dev;
+      }
+    }
+    return worst;
+  }
+
   /** Only assign slow orders to the worst ~45% of sections based on defect severity */
   private assignSlowOrders(): void {
     // Compute severity per section
     const severities: { sec: number; sev: number }[] = [];
     for (let sec = 0; sec < SEGMENT_COUNT; sec++) {
-      const visSegs = this.track.getSegmentsForSection(sec);
-      if (visSegs.length === 0) continue;
-      const vi = visSegs[0];
-      const devL = this.track.getProfile(vi, 'left').compare(this.targetProfile).averageDeviation;
-      const devR = this.track.getProfile(vi, 'right').compare(this.targetProfile).averageDeviation;
-      severities.push({ sec, sev: Math.max(devL, devR) });
+      if (this.track.getSegmentsForSection(sec).length === 0) continue;
+      severities.push({ sec, sev: this.getSectionWorstDeviation(sec) });
     }
 
     // Sort by severity, worst first
@@ -450,20 +474,12 @@ export class Game {
 
   private updateTrackMapDefects(): void {
     for (let sec = 0; sec < SEGMENT_COUNT; sec++) {
-      const visualSegs = this.track.getSegmentsForSection(sec);
-      if (visualSegs.length > 0) {
-        const vi = visualSegs[0];
-        const devL = this.track.getProfile(vi, 'left').compare(this.targetProfile);
-        const devR = this.track.getProfile(vi, 'right').compare(this.targetProfile);
-        // Use the worst of the two rails
-        const worstDev = Math.max(devL.averageDeviation, devR.averageDeviation);
-        const worstAcc = Math.min(devL.withinTolerance, devR.withinTolerance);
-        this.trackMap.updateSegment(sec, {
-          defectSeverity: Math.min(1, worstDev * 10),
-          accuracy: worstAcc,
-          slowOrder: this.segmentSlowOrder[sec],
-        });
-      }
+      if (this.track.getSegmentsForSection(sec).length === 0) continue;
+      this.trackMap.updateSegment(sec, {
+        defectSeverity: Math.min(1, this.getSectionWorstDeviation(sec) * 10),
+        accuracy: this.getSectionAccuracy(sec),
+        slowOrder: this.segmentSlowOrder[sec],
+      });
     }
   }
 
@@ -585,8 +601,9 @@ export class Game {
     const secOffset = this.track.sectionOffset;
     const secEnd = secOffset + SEGMENT_COUNT * 20; // GAME_SECTION_LENGTH = 20
     this.trackMap.setGrinderPosition((this.grinderPosition - secOffset) / (secEnd - secOffset));
-    // Find nearest unfinished section
-    const curSec = this.track.getSectionIndex(this.grinderPosition);
+    // Find nearest unfinished section (clamp so lead-in/run-out still points somewhere sensible)
+    const curSec = Math.max(0, Math.min(SEGMENT_COUNT - 1,
+      Math.floor((this.grinderPosition - secOffset) / 20)));
     let nextTarget = -1;
     let bestDist = Infinity;
     for (let s = 0; s < SEGMENT_COUNT; s++) {
@@ -742,11 +759,14 @@ export class Game {
     const sectionIndex = this.track.getSectionIndex(this.grinderPosition);
     const visualSegIndex = this.track.getSegmentIndex(this.grinderPosition);
 
-    // Heat cools when not grinding
-    this.stoneHeat = Math.max(0, this.stoneHeat - 10 * dt);
-    this.overheatWarning = this.stoneHeat > 80;
-
     this.isGrinding = this.input.isKeyDown(' ');
+
+    // Stones cool off while lifted
+    if (!this.isGrinding) {
+      this.stoneHeat = Math.max(0, this.stoneHeat - 8 * dt);
+    }
+    this.overheatWarning = this.stoneHeat > 80;
+    this.overgrindCooldown = Math.max(0, this.overgrindCooldown - dt);
 
     // Always show stone aim position
     for (const rail of ['left', 'right'] as const) {
@@ -779,9 +799,11 @@ export class Game {
     const GRIND_SPEED = 2.0; // m/s — steady pace
     this.grinderSpeed = GRIND_SPEED;
 
-    // Heat builds with pressure
+    // Heat builds with pressure, minus some passive cooling while grinding.
+    // Net rate: ~0/s at 25% pressure, ~3/s at 50% (overheat in ~25s), ~9/s at 100% (~9s).
     const avgPressure = (this.stonePressure.left + this.stonePressure.right) / 2;
-    this.stoneHeat = Math.min(100, this.stoneHeat + avgPressure * 0.12 * dt);
+    const heatRate = avgPressure * 0.12 - 3;
+    this.stoneHeat = Math.max(0, Math.min(100, this.stoneHeat + heatRate * dt));
     const heatPenalty = this.stoneHeat > 80 ? 0.5 : this.stoneHeat > 60 ? 0.8 : 1.0;
 
     // Grind both rails with their individual settings
@@ -790,7 +812,8 @@ export class Game {
       const pressure = this.stonePressure[rail];
       const grindX = angle * 0.7;
       const contactWidth = 10 + (100 - pressure) * 0.08;
-      const depth = (0.005 + pressure * 0.0002) * heatPenalty * dt;
+      // Metal removed per second: ~0.03mm at 50% pressure, ~0.05mm at 100%
+      const depth = (0.012 + pressure * 0.0004) * heatPenalty * dt;
 
       const p = this.track.getProfile(visualSegIndex, rail);
       p.removeMetalAt(grindX, contactWidth, depth);
@@ -800,12 +823,13 @@ export class Game {
       // Check over-grind per rail
       const devAt = p.getDeviationAtX(grindX, this.targetProfile);
       if (devAt < -this.targetProfile.tolerance) {
-        this.overgrindCooldown = Math.max(0, this.overgrindCooldown - dt);
         if (this.overgrindCooldown <= 0) {
           this.overgrindCooldown = 1.0;
-          this.segmentDamage[sectionIndex] = Math.max(
-            this.segmentDamage[sectionIndex] || 0,
-            p.countOverground(this.targetProfile));
+          if (sectionIndex >= 0) {
+            this.segmentDamage[sectionIndex] = Math.max(
+              this.segmentDamage[sectionIndex] || 0,
+              p.countOverground(this.targetProfile));
+          }
           const renderer = rail === 'left' ? this.profileRenderer : this.profileRendererRight;
           renderer.flashBorder();
           this.screenShake = 0.06;
@@ -813,8 +837,6 @@ export class Game {
         }
       }
     }
-
-    this.segmentGrindTime[sectionIndex] += dt;
 
     // Track pass count
     if (sectionIndex !== this.lastSectionIndex) {
@@ -830,12 +852,25 @@ export class Game {
       this.track.rebuildSegment(visualSegIndex, 'right');
     }
 
-    const grindProgress = Math.min(1, this.segmentGrindTime[sectionIndex] / 5);
-    const visualSegs = this.track.getSegmentsForSection(sectionIndex);
-    for (const vi of visualSegs) {
-      if (vi < this.track.leftSegments.length) {
-        this.track.leftSegments[vi].setGrindProgress(grindProgress);
-        this.track.rightSegments[vi].setGrindProgress(grindProgress);
+    // Section scoring only applies inside the scored sections (not lead-in / run-out)
+    if (sectionIndex >= 0) {
+      this.segmentGrindTime[sectionIndex] += dt;
+
+      // Rust → polished steel visual, driven by time spent grinding
+      const grindProgress = Math.min(1, this.segmentGrindTime[sectionIndex] / 5);
+      for (const vi of this.track.getSegmentsForSection(sectionIndex)) {
+        if (vi < this.track.leftSegments.length) {
+          this.track.leftSegments[vi].setGrindProgress(grindProgress);
+          this.track.rightSegments[vi].setGrindProgress(grindProgress);
+        }
+      }
+
+      // Section completes only when EVERY 5m stretch of BOTH rails is 80%+ in tolerance
+      const accuracy = this.getSectionAccuracy(sectionIndex);
+      this.trackMap.updateSegment(sectionIndex, { grindProgress, accuracy, slowOrder: this.segmentSlowOrder[sectionIndex] });
+
+      if (accuracy > 0.8 && !this.segmentCompleted[sectionIndex]) {
+        this.completeSegment(sectionIndex, accuracy);
       }
     }
 
@@ -848,19 +883,6 @@ export class Game {
       renderer.setWorstZones(profile.findWorstZones(this.targetProfile, 3));
       renderer.setSegmentInfo(dmg, passes);
       renderer.draw(profile, this.targetProfile);
-    }
-
-    // Check section completion
-    const profL = this.track.getProfile(visualSegIndex, 'left');
-    const profR = this.track.getProfile(visualSegIndex, 'right');
-    const accuracy = Math.min(
-      profL.compare(this.targetProfile).withinTolerance,
-      profR.compare(this.targetProfile).withinTolerance
-    );
-    this.trackMap.updateSegment(sectionIndex, { grindProgress, accuracy, slowOrder: this.segmentSlowOrder[sectionIndex] });
-
-    if (accuracy > 0.8 && !this.segmentCompleted[sectionIndex]) {
-      this.completeSegment(sectionIndex, accuracy);
     }
 
     // SPARKS + LIGHTS — use pre-allocated emit point pool (avoids 96 clones/frame)
@@ -1249,8 +1271,13 @@ export class Game {
   private startJobSelect(): void {
     this.gameStarted = false;
     this.jobComplete = false;
-    this.guidedTutorial.setReplay();
-    this.isFirstJob = false;
+    // Only switch to "replay" mode once a job has actually been played.
+    // (On the very first call — from the constructor — currentJob is still null,
+    // so the guided tutorial and easy opening sections stay enabled.)
+    if (this.currentJob) {
+      this.guidedTutorial.setReplay();
+      this.isFirstJob = false;
+    }
     this.isPaused = false;
     this.pauseMenu.style.display = 'none';
     this.jobSelect.show().then((job) => {
@@ -1296,9 +1323,10 @@ export class Game {
     this.stonePressure = { left: 50, right: 50 };
     this.stoneHeat = 0;
 
-    // Apply defects with job severity
+    // Apply defects with job severity, then slow-order only the worst sections
     this.applyInitialDefects();
     this.setSegmentDefectGlow();
+    this.assignSlowOrders();
 
     // New environment
     this.environment = new Environment(this.track);

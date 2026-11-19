@@ -33,7 +33,7 @@ export const JOBS: JobDefinition[] = [
     trackLength: '280m',
     sections: 14,
     defectMultiplier: 1.0,
-    defectSeverity: 0.4,
+    defectSeverity: 0.55,
     timeOfDay: 1,
     trackPoints: [
       // Long tangents with very gentle curves — classic Kansas flatland

@@ -182,7 +182,9 @@ export class RailProfile {
     for (let i = 2; i < deviation.pointDeviations.length - 2; i++) {
       const dev = deviation.pointDeviations[i];
       const absDev = Math.abs(dev);
-      if (absDev < target.tolerance * 1.5) continue; // ignore small deviations
+      // Flag anything outside tolerance — if we hid smaller errors, the markers
+      // could vanish while the section still fails its 80% accuracy check.
+      if (absDev <= target.tolerance) continue;
 
       // Check if this is a local maximum
       const neighbors = [

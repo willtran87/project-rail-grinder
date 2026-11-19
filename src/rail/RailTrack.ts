@@ -104,9 +104,14 @@ export class RailTrack {
   }
 
   /** Get the game section index (for scoring/defects) for a distance */
+  /**
+   * Which game section a track distance falls in.
+   * Returns -1 for the lead-in and run-out track outside the scored sections,
+   * so grinding there can't count toward (or complete) a section.
+   */
   getSectionIndex(distance: number): number {
-    return Math.max(0, Math.min(this.sectionCount - 1,
-      Math.floor((distance - this.sectionOffset) / GAME_SECTION_LENGTH)));
+    const idx = Math.floor((distance - this.sectionOffset) / GAME_SECTION_LENGTH);
+    return idx >= 0 && idx < this.sectionCount ? idx : -1;
   }
 
   /** Get all visual segment indices that belong to a game section */
