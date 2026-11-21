@@ -36,6 +36,50 @@ const FLASH_TIME = 0.6;                                 // seconds the completio
 const SHINE_WIDTH = 0.045;   // metres (~45mm, a typical running band)
 const SHINE_BASE_GLOW = 0.35;
 let shineGeometry: THREE.PlaneGeometry | null = null;
+let grindMarkTexture: THREE.CanvasTexture | null = null;
+
+// Hot rail: freshly ground steel glows dull orange, then cools back to silver
+const HOT_COLOR = new THREE.Color(0xff5a14);
+const HEAT_COOL_TIME = 3.5;   // seconds to cool from fully hot to cold
+
+/**
+ * Fine lengthwise scratches, like the facets real grindstones leave on the
+ * rail head. Drawn once on a small canvas and shared by every rail.
+ * (u = across the rail head, v = along the rail.)
+ */
+function getGrindMarkTexture(): THREE.CanvasTexture | null {
+  if (grindMarkTexture) return grindMarkTexture;
+  if (typeof document === 'undefined') return null; // unit tests run without a browser
+  const W = 64, H = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const g = canvas.getContext('2d')!;
+  g.fillStyle = '#c8ccd4';
+  g.fillRect(0, 0, W, H);
+  // Facet bands: a few slightly different shades across the head
+  for (let x = 0; x < W; x += 8) {
+    const v = 190 + Math.floor(Math.random() * 50);
+    g.fillStyle = `rgb(${v},${v + 2},${v + 6})`;
+    g.fillRect(x, 0, 8, H);
+  }
+  // Scratches running along the rail
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * W;
+    const bright = Math.random() < 0.5;
+    g.strokeStyle = bright ? 'rgba(255,255,255,0.55)' : 'rgba(90,95,105,0.45)';
+    g.lineWidth = 0.6 + Math.random() * 0.8;
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.lineTo(x + (Math.random() - 0.5) * 2, H);
+    g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 3);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  grindMarkTexture = tex;
+  return tex;
+}
 
 export class RailSegment {
   readonly mesh: THREE.Mesh;
@@ -48,6 +92,12 @@ export class RailSegment {
   private _grindProgress: number = 0;
   private _defectSeverity: number = 0; // 0-1, controls the damage glow intensity
   private flashTimer: number = 0;
+  /** 0..1 — how hot this stretch of rail is from grinding (glows orange) */
+  private heat: number = 0;
+  // The rail's "normal" glow for its grind state; heat glow is added on top
+  private baseEmissive = new THREE.Color();
+  private baseEmissiveIntensity = 0;
+  private bandOpacity = 0;
 
   constructor(profile: RailProfile, positionZ: number = 0) {
     this.profile = profile;
@@ -76,6 +126,7 @@ export class RailSegment {
     }
     this.shineMaterial = new THREE.MeshStandardMaterial({
       color: 0xeef2f8,
+      map: getGrindMarkTexture(), // fine grinding scratches along the running band
       emissive: 0x9aa4b4,
       emissiveIntensity: SHINE_BASE_GLOW,
       metalness: 0.3,
@@ -98,9 +149,34 @@ export class RailSegment {
     this._defectSeverity = Math.max(0, Math.min(1, severity));
     if (this._grindProgress < 0.1) {
       // Show damage glow on unground segments
-      this.material.emissive.copy(DAMAGED_EMISSIVE);
-      this.material.emissiveIntensity = this._defectSeverity * 0.4;
+      this.baseEmissive.copy(DAMAGED_EMISSIVE);
+      this.baseEmissiveIntensity = this._defectSeverity * 0.4;
+      this.applyGlow();
     }
+  }
+
+  /**
+   * The grindstones just passed over this rail: warm it up.
+   * @param amount - heat to add (0..1); it cools by itself in update()
+   */
+  heatUp(amount: number): void {
+    this.heat = Math.min(1, this.heat + amount);
+    this.applyGlow();
+  }
+
+  /** Combine the normal glow with the orange heat glow */
+  private applyGlow(): void {
+    if (this.flashTimer > 0) return; // the completion flash owns the glow for now
+    const h = this.heat;
+    // Running band: fades in as the section is ground, and shows while hot
+    const opacity = Math.max(this.bandOpacity, h);
+    this.shineMaterial.opacity = opacity;
+    this.shine.visible = opacity > 0.01;
+
+    this.shineMaterial.emissive.set(0x9aa4b4).lerp(HOT_COLOR, h);
+    this.shineMaterial.emissiveIntensity = SHINE_BASE_GLOW + h * 3.5; // > 1 → bloom
+    this.material.emissive.copy(this.baseEmissive).lerp(HOT_COLOR, h);
+    this.material.emissiveIntensity = this.baseEmissiveIntensity + h * 0.9;
   }
 
   /** Update grind progress (0-1). Drives the rust-to-steel visual transition. */
@@ -110,29 +186,26 @@ export class RailSegment {
 
     // Running band fades in over the second half of the transition
     const band = Math.max(0, Math.min(1, (t - 0.35) / 0.65));
-    this.shineMaterial.opacity = band * 0.9;
-    this.shine.visible = band > 0.01;
-
-    if (this.flashTimer > 0) return; // don't override flash
+    this.bandOpacity = band * 0.9;
 
     // Color: damaged → grinding → steel
+    // (colour / metalness / roughness changes don't need material.needsUpdate)
     if (t < 0.5) {
       const s = t / 0.5;
       this.material.color.copy(DAMAGED_COLOR).lerp(GRINDING_COLOR, s);
-      this.material.emissive.copy(DAMAGED_EMISSIVE).lerp(GRINDING_EMISSIVE, s);
-      this.material.emissiveIntensity = this._defectSeverity * 0.4 * (1 - s);
+      this.baseEmissive.copy(DAMAGED_EMISSIVE).lerp(GRINDING_EMISSIVE, s);
+      this.baseEmissiveIntensity = this._defectSeverity * 0.4 * (1 - s);
       this.material.metalness = 0.4 + s * 0.2;
       this.material.roughness = 0.75 - s * 0.15;
     } else {
       const s = (t - 0.5) / 0.5;
       this.material.color.copy(GRINDING_COLOR).lerp(STEEL_COLOR, s);
-      this.material.emissive.copy(GRINDING_EMISSIVE).lerp(STEEL_EMISSIVE, s);
-      this.material.emissiveIntensity = s * 0.15;
+      this.baseEmissive.copy(GRINDING_EMISSIVE).lerp(STEEL_EMISSIVE, s);
+      this.baseEmissiveIntensity = s * 0.15;
       this.material.metalness = 0.6 + s * 0.3;
       this.material.roughness = 0.6 - s * 0.2;
     }
-
-    this.material.needsUpdate = true;
+    this.applyGlow();
   }
 
   /** Flash bright on completion — call once, then update() handles the fade */
@@ -146,13 +219,16 @@ export class RailSegment {
     this.shineMaterial.emissiveIntensity = 4;
   }
 
-  /** Call each frame to handle flash fade */
+  /** Call each frame to handle the flash fade and the rail cooling down */
   update(dt: number): void {
+    if (this.heat > 0) {
+      this.heat = Math.max(0, this.heat - dt / HEAT_COOL_TIME);
+      this.applyGlow();
+    }
     if (this.flashTimer > 0) {
       this.flashTimer -= dt;
       if (this.flashTimer <= 0) {
         this.flashTimer = 0;
-        this.shineMaterial.emissiveIntensity = SHINE_BASE_GLOW;
         this.setGrindProgress(this._grindProgress); // restore normal appearance
       } else {
         const k = this.flashTimer / FLASH_TIME;

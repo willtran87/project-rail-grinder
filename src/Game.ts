@@ -14,14 +14,16 @@ import { RailTrack, GAME_SECTION_LENGTH, VISUAL_SEGMENT_LENGTH } from './rail/Ra
 import { RailProfile } from './rail/RailProfile';
 import { ProfileRenderer } from './rail/ProfileRenderer';
 import { Environment } from './world/Environment';
-import { createGroundTexture } from './world/ProceduralTextures';
+import { createGroundTexture, createSnowGroundTexture } from './world/ProceduralTextures';
 import { RailGrinder } from './world/RailGrinder';
 import { DayNightCycle } from './world/DayNightCycle';
 import { Weather } from './world/Weather';
-import { GrindEffects } from './effects/GrindEffects';
+import { GrindEffects, GRIND_CAR_OFFSETS } from './effects/GrindEffects';
 import { GroundMist } from './world/GroundMist';
 import { Ocean } from './world/Ocean';
 import { SlowOrderSigns } from './world/SlowOrderSigns';
+import { Landmarks, type Occupancy } from './world/Landmarks';
+import { ConsistLights } from './world/ConsistLights';
 import { AudioManager } from './audio/AudioManager';
 import { PassingTrain } from './world/PassingTrain';
 import { GuidedTutorial } from './ui/GuidedTutorial';
@@ -34,7 +36,7 @@ import { eventBus } from './core/EventBus';
 import { disposeObject3D } from './core/dispose';
 import { CameraController } from './core/CameraController';
 import { RevenueTrainDeadline } from './world/RevenueTrainDeadline';
-import type { TargetProfile } from './types/rail';
+import type { TargetProfile, Region } from './types/rail';
 import {
   COMPLETION_ACCURACY, GRIND_SPEED, COOL_RATE,
   stoneGrindX, stoneContactWidth, heatRatePerSec, heatPenalty, removalRatePerSec,
@@ -50,6 +52,18 @@ import { toggleColorblindMode } from './ui/palette';
 
 const RAILS = ['left', 'right'] as const;
 
+/**
+ * What the countryside looks like for each kind of route:
+ *   trees     - woodland density (1 = forest)
+ *   mountains - distant ranges (0 = flat horizon, >1 = taller)
+ */
+const REGION_SCENERY: Record<Region, { trees: number; mountains: number }> = {
+  prairie:  { trees: 0.15, mountains: 0 },    // Kansas: open grassland, flat horizon
+  mountain: { trees: 1.2,  mountains: 1.4 },  // Marias Pass: forest under big peaks
+  city:     { trees: 0.3,  mountains: 0 },    // Chicago: scrubby trees, skyline instead
+  coast:    { trees: 0.45, mountains: 0.55 }, // California: low coastal hills
+};
+
 export class Game {
   private engine: Engine;
   private input: InputManager;
@@ -59,6 +73,9 @@ export class Game {
   private environment!: Environment;
   private ocean: Ocean | null = null; // only on coastal jobs
   private slowSigns: SlowOrderSigns | null = null;
+  private landmarks: Landmarks | null = null;   // route landmarks + level crossings
+  private crossingBell = 0;                     // 0..1, from the level crossings
+  private consistLights!: ConsistLights;        // headlight that comes on at dusk
   private dayNight: DayNightCycle;
   private grindEffects: GrindEffects; // sparks, work lights, contact glow
   private groundMist: GroundMist;
@@ -164,6 +181,8 @@ export class Game {
 
   // Ground
   private ground!: THREE.Mesh;
+  private grassGroundTexture!: THREE.Texture;
+  private snowGroundTexture!: THREE.Texture;
 
   /** Number of scored game sections on the current track */
   private get sectionCount(): number { return this.track.sectionCount; }
@@ -206,10 +225,36 @@ export class Game {
     this.grindEffects.dustAmount = q.dustAmount;
   }
 
+  /**
+   * Stretches of track that level crossings must treat as "train coming":
+   * the grinder consist and any passing freight, each stretched ahead by
+   * ~6 seconds of travel so the lights and gates get going in good time.
+   */
+  private crossingOccupancy(): Occupancy[] {
+    const LEAD_SECONDS = 6;
+    const pos = this.grinderPosition;
+    const v = this.grinderSpeed;
+    // The consist runs from ~50 m behind grinderPosition to ~76 m ahead of it
+    const occ: Occupancy[] = [{
+      from: pos - 50 - 15 - Math.max(0, -v) * LEAD_SECONDS,
+      to: pos + 76 + 45 + Math.max(0, v) * LEAD_SECONDS,
+    }];
+    const freight = this.passingTrain.span();
+    if (freight) {
+      occ.push({ from: freight.rear - 10, to: freight.front + freight.speed * LEAD_SECONDS });
+    }
+    return occ;
+  }
+
   /** Sky, sun, fog, colour grade and ground mist — all follow time of day and the grinder */
   private updateAtmosphere(dt: number): void {
     const focus = this.grinderFocus();
+    // Weather feeds the sky: clouds grey it out, snow whitens the ground
+    this.dayNight.overcast = this.weather.overcast;
     this.dayNight.update(dt, this.engine.camera, focus);
+    const dark = this.dayNight.darkness;
+    this.consistLights.update(this.track, this.grinderPosition, dark, this.weather.haze);
+    this.crossingBell = this.landmarks?.update(dt, this.crossingOccupancy(), this.grinderPosition, dark) ?? 0;
     this.groundMist.update(dt, focus, this.dayNight.fogColor, this.dayNight.currentName);
     this.ocean?.update(dt, this.dayNight.sky, this.dayNight.fogColor);
     // Dust takes on the colour of the air around it: pale tan by day, dim at night
@@ -313,7 +358,11 @@ export class Game {
 
     // Weather
     this.weather = new Weather();
-    this.engine.scene.add(this.weather.rainGroup);
+    this.engine.scene.add(this.weather.group);
+
+    // Headlight beam at the front of the consist (fades in as it gets dark)
+    this.consistLights = new ConsistLights();
+    this.engine.scene.add(this.consistLights.group);
 
     // Inspection report, job selection, guided tutorial
     this.inspectionReport = new InspectionReport();
@@ -462,9 +511,12 @@ export class Game {
   private createGround(): void {
     // Large ground plane centered on the track area (track goes x:0-55, z:-10 to 350)
     const groundGeo = new THREE.PlaneGeometry(800, 800);
+    // Grass by default; snowy routes swap in the snow texture (see buildWorld)
+    this.grassGroundTexture = createGroundTexture();
+    this.snowGroundTexture = createSnowGroundTexture();
     const groundMat = new THREE.MeshStandardMaterial({
       color: 0x4a6a3a, roughness: 0.95, metalness: 0.0,
-      map: createGroundTexture(),
+      map: this.grassGroundTexture,
     });
     this.ground = new THREE.Mesh(groundGeo, groundMat);
     this.ground.rotation.x = -Math.PI / 2;
@@ -534,7 +586,7 @@ export class Game {
     if (this.inspectionPass) {
       this.handleInspectionPass(dt);
       this.updateAtmosphere(dt);
-      this.grinder.update(dt);
+      this.grinder.update(dt, this.dayNight.darkness);
       this.input.endFrame();
       return;
     }
@@ -563,7 +615,7 @@ export class Game {
     this.camera.update(dt, this.track, this.grinderPosition);
     this.updateAtmosphere(dt);
     this.grindEffects.update(dt);
-    this.grinder.update(dt);
+    this.grinder.update(dt, this.dayNight.darkness);
     this.slowSigns?.update(dt);
 
     // Update rail segment animations (flash fade, etc.)
@@ -588,6 +640,10 @@ export class Game {
       const sec = this.track.getSectionIndex(this.grinderPosition);
       const railCondition = (sec >= 0 && sec < this.segmentCompleted.length && this.segmentCompleted[sec]) ? 1.0 : 0.0;
       this.audio.updateWheelSound(this.grinderSpeed, dt, railCondition);
+      // Route background sounds: birds / crickets / surf / traffic, rain, crossing bell
+      const w = this.weather;
+      this.audio.updateAmbience(dt, this.dayNight.darkness,
+        w.isRaining ? w.intensity : 0, w.isSnowing ? w.intensity : 0, this.crossingBell);
     }
 
     // Passing trains
@@ -615,10 +671,8 @@ export class Game {
     this.trackMap.setNextTarget(nextTarget);
     this.trackMap.draw();
 
-    // Boost exposure when grinding at night/dusk for spark drama
-    if ((this.dayNight.isNight || this.dayNight.isDusk) && this.isGrinding) {
-      this.engine.renderer.toneMappingExposure += (1.6 - this.engine.renderer.toneMappingExposure) * 3 * dt;
-    }
+    // Boost exposure when grinding in the dark for spark drama (eased in DayNightCycle)
+    this.dayNight.grindBoost = this.isGrinding ? 1 : 0;
 
     // Revenue train deadline (paused during the guided tutorial)
     if (!this.guidedTutorial.active) {
@@ -648,11 +702,34 @@ export class Game {
     this.input.endFrame();
   }
 
+  /**
+   * Highest speed allowed right now because of slow orders: the limit itself
+   * inside one, and ahead of one, the fastest speed that can still brake down
+   * to the limit by the time the grinder reaches it (v² = limit² + 2·brake·distance).
+   */
+  private slowOrderSpeedLimit(limit: number, brake: number): number {
+    const pos = this.grinderPosition;
+    const slowAt = (d: number) => {
+      const s = this.track.getSectionIndex(d);
+      return s >= 0 && s < this.segmentSlowOrder.length && this.segmentSlowOrder[s];
+    };
+    if (slowAt(pos)) return limit;
+    // Look ahead in the direction of travel, up to the longest braking distance
+    const dir = this.grinderSpeed < 0 ? -1 : 1;
+    const lookAhead = (30 * 30) / (2 * brake);
+    for (let ahead = 1; ahead <= lookAhead; ahead += 1) {
+      if (slowAt(pos + dir * ahead)) return Math.sqrt(limit * limit + 2 * brake * ahead);
+    }
+    return Infinity;
+  }
+
   private handleGrinderMovement(dt: number): void {
-    // Slow order enforcement: cap speed in damaged sections
-    const currentSection = this.track.getSectionIndex(this.grinderPosition);
-    const inSlowOrder = currentSection >= 0 && currentSection < this.segmentSlowOrder.length && this.segmentSlowOrder[currentSection];
-    const slowOrderLimit = inSlowOrder ? 2.0 : 999; // ~4.5 mph in slow order zones
+    // Slow order enforcement: 2 m/s (~4.5 mph) in damaged sections. Like a real
+    // train, the grinder starts braking *before* the slow order, so that it is
+    // already down to the limit when it gets there.
+    const SLOW_ORDER_SPEED = 2.0;
+    const SLOW_ORDER_BRAKE = 10; // m/s²
+    const slowOrderLimit = this.slowOrderSpeedLimit(SLOW_ORDER_SPEED, SLOW_ORDER_BRAKE);
 
     // While grinding, auto-speed is handled in handleGrinding
     // While not grinding, player drives normally
@@ -660,7 +737,8 @@ export class Game {
       // SHIFT = fast-travel (3x speed) when not grinding
       const fastTravel = this.input.isKeyDown('shift');
       const speedMult = fastTravel ? 3.0 : 1.0;
-      const maxSpeed = Math.min(10 * speedMult, slowOrderLimit * speedMult);
+      // Fast travel raises the top speed, but never the slow-order limit
+      const maxSpeed = Math.min(10 * speedMult, slowOrderLimit);
       const accel = 5 * speedMult, friction = 3;
 
       if (this.input.isKeyDown('w') || this.input.isKeyDown('arrowup')) {
@@ -670,6 +748,12 @@ export class Game {
       } else {
         if (this.grinderSpeed > 0) this.grinderSpeed = Math.max(0, this.grinderSpeed - friction * dt);
         else if (this.grinderSpeed < 0) this.grinderSpeed = Math.min(0, this.grinderSpeed + friction * dt);
+      }
+      // Too fast for the limit (e.g. coasting toward a slow order)? Brake firmly down to it.
+      if (this.grinderSpeed > maxSpeed) {
+        this.grinderSpeed = Math.max(maxSpeed, this.grinderSpeed - SLOW_ORDER_BRAKE * dt);
+      } else if (this.grinderSpeed < -maxSpeed / 2) {
+        this.grinderSpeed = Math.min(-maxSpeed / 2, this.grinderSpeed + SLOW_ORDER_BRAKE * dt);
       }
     }
 
@@ -827,6 +911,19 @@ export class Game {
         this.rendererFor(rail).flashBorder();
         this.camera.shake(0.06);
         if (this.audioReady) this.audio.playOvergrindAlarm();
+      }
+    }
+
+    // Hot rail: the steel under each grinding car glows orange, leaving a
+    // cooling trail behind the consist (purely visual)
+    const heat = (0.5 + avgPressure / 100) * 2.5 * dt;
+    for (const carOff of GRIND_CAR_OFFSETS) {
+      for (const stoneZ of [-4, 0, 4]) {
+        const vi = this.track.getSegmentIndex(this.grinderPosition + carOff + stoneZ);
+        if (vi >= 0 && vi < this.track.leftSegments.length) {
+          this.track.leftSegments[vi].heatUp(heat);
+          this.track.rightSegments[vi].heatUp(heat);
+        }
       }
     }
 
@@ -1143,6 +1240,11 @@ export class Game {
       disposeObject3D(this.ocean.group);
       this.ocean = null;
     }
+    if (this.landmarks) {
+      this.engine.scene.remove(this.landmarks.group);
+      disposeObject3D(this.landmarks.group);
+      this.landmarks = null;
+    }
     if (this.passingTrain) {
       this.engine.scene.remove(this.passingTrain.group);
       this.engine.scene.remove(this.passingTrain.adjacentTrack);
@@ -1181,10 +1283,27 @@ export class Game {
       this.initialSectionAccuracy.push(sectionMeanAccuracy(this.track, this.targetProfile, sec));
     }
 
+    // Route weather (climate), background sounds and snow cover
+    this.weather.setRegion(job.region);
+    this.audio.setRegion(job.region);
+    this.dayNight.snowCover = this.weather.snowCover;
+    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    const groundMap = this.weather.snowCover > 0.5 ? this.snowGroundTexture : this.grassGroundTexture;
+    if (groundMat.map !== groundMap) { groundMat.map = groundMap; groundMat.needsUpdate = true; }
+
+    // Landmarks + level crossings first, so the scenery can keep clear of them
+    const landmarks = new Landmarks(this.track, job.region);
+    this.landmarks = landmarks;
+    this.engine.scene.add(landmarks.group);
+
     // New environment (coastal routes keep the west side clear for the sea)
     const coast = job.scenery === 'coast';
-    this.environment = new Environment(this.track,
-      coast ? { clearSide: { side: -1, beyond: 7 } } : {});
+    this.environment = new Environment(this.track, {
+      clearSide: coast ? { side: -1, beyond: 7 } : undefined,
+      blocked: (x, z) => landmarks.blocks(x, z),
+      snow: this.weather.snowCover,
+      ...REGION_SCENERY[job.region],
+    });
     this.engine.scene.add(this.environment.group);
     if (coast) {
       this.ocean = new Ocean(this.track, -1);
@@ -1225,6 +1344,7 @@ export class Game {
 
     // Stop grinding effects that may still be running
     this.isGrinding = false;
+    this.dayNight.grindBoost = 0;
     this.grinder.setGrinding(false);
     this.grindEffects.stop();
     if (this.audioReady) this.audio.stopGrinding();

@@ -15,9 +15,9 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 
 | Key | Action |
 |-----|--------|
-| W / S | Drive forward / reverse |
+| W / S (or ↑ / ↓) | Drive forward / reverse |
 | SPACE | Hold to grind (auto-drives while grinding) |
-| SHIFT | Hold for fast travel (3x speed when not grinding) |
+| SHIFT | Hold for fast travel (3x speed when not grinding — slow orders still apply, and the grinder brakes ahead of them) |
 | **Left Rail** | |
 | Q / E | Adjust left stone angle |
 | A / D | Adjust left pressure |
@@ -26,8 +26,8 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | J / L | Adjust right pressure |
 | **Camera & UI** | |
 | 1-5 | Camera angles (chase, side, cab, overview, grind close-up) |
-| N | Cycle time of day (dawn, day, dusk, night) |
-| P | Toggle rain |
+| N | Skip ahead to the next time of day (time also passes on its own) |
+| P | Start / stop rain (snow on Marias Pass) — the weather also changes by itself |
 | M | Mute audio |
 | C | Toggle colour-blind palette (remembered) |
 | `` ` `` (backtick) | Toggle FPS / frame-time counter |
@@ -74,10 +74,22 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 
 Four contracts based on real US railroad corridors:
 
-- **BNSF Transcon — Emporia Sub** (Kansas): Flat prairie, gentle curves, head checking from high-speed intermodal. Easy.
-- **BNSF Hi-Line — Marias Pass** (Montana): Mountain crossing at 5,213 ft, sharp curves, gauge face wear. Medium.
-- **BRC Clearing Yard Approach** (Chicago): Dense urban geometry, corrugation from stop-and-go traffic. Hard.
-- **UP Coast Sub — Surf to SLO** (California): Coastal curves, salt air corrosion. Expert.
+| Contract | Difficulty | Base pay | Unlocks at |
+|----------|------------|----------|------------|
+| **BNSF Transcon — Emporia Sub** (Kansas): flat prairie, gentle curves, head checking from high-speed intermodal | Easy | $6,000 | start |
+| **BNSF Hi-Line — Marias Pass** (Montana): mountain crossing at 5,213 ft, sharp curves, gauge face wear | Medium | $9,000 | ★3 |
+| **BRC Clearing Yard Approach** (Chicago): dense urban geometry, corrugation from stop-and-go traffic | Hard | $13,000 | ★7 |
+| **UP Coast Sub — Surf to SLO** (California): coastal curves beside an animated ocean, salt air corrosion | Expert | $18,000 | ★12 |
+
+## A Living World
+
+- **Time passes** during a job: dawn → day → dusk → night, about 3 minutes per phase.
+- **Weather rolls in and out** to suit the route: storms on the prairie, snow showers (and snow on the ground) at Marias Pass, drizzle in Chicago, marine cloud on the coast.
+- **Hot rail:** freshly ground steel glows orange under the stones and cools behind the consist, leaving polished rail with fine grinding scratches.
+- **Lights at night:** the headlight throws a visible beam (stronger in rain and snow), and the beacons flash brighter.
+- **Landmarks:** a grain elevator, windmill and cattle in Kansas; a summit obelisk, fire lookout and log cabin at Marias Pass; the Chicago skyline (lit windows at night), warehouses and a signal gantry; a lighthouse with a sweeping beam, palms and a lifeguard tower on the coast.
+- **Level crossings:** lights flash, the bell rings and the gates come down as the grinder approaches, and cars wait for you.
+- **Sounds of the place:** birdsong or crickets on the prairie, wind and hawks in the mountains, traffic and horns in the city, surf and gulls on the coast, plus rain hiss.
 
 ## Tech Stack
 

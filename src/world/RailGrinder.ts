@@ -56,10 +56,18 @@ export class RailGrinder {
   }
 
   setGrinding(a: boolean) { this._grinding = a; }
-  update(dt: number) {
-    this.beaconPhase += dt * 5;
-    const b = 0.3 + Math.abs(Math.sin(this.beaconPhase)) * 0.7;
-    for (const bm of this.beacons) (bm.material as THREE.MeshStandardMaterial).emissiveIntensity = b * 2.5;
+  /**
+   * @param darkness - 0 (day) .. 1 (night): beacons flash brighter in the dark
+   */
+  update(dt: number, darkness = 0) {
+    // Rotating-beacon look: a sharp bright flash, then dim, twice a second or so.
+    // (All beacons share one material, so setting it once updates them all.)
+    this.beaconPhase += dt * 4.5;
+    const flash = Math.pow(Math.abs(Math.sin(this.beaconPhase)), 6);
+    const beaconMat = this.m.beacon as THREE.MeshStandardMaterial;
+    beaconMat.emissiveIntensity = 0.4 + flash * (2.5 + darkness * 4);
+    // Headlight lenses glow harder at night (bloom turns them into halos)
+    (this.m.hl as THREE.MeshStandardMaterial).emissiveIntensity = 2 + darkness * 4;
     const drop = this._grinding ? 0.25 : 0;
     for (let i = 0; i < this.grindModules.length; i++)
       this.grindModules[i].position.y += (this.grindModuleRestY[i] - drop - this.grindModules[i].position.y) * 6 * dt;

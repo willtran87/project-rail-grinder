@@ -9,6 +9,10 @@
  * Each preset drives: sky dome (gradient, sun/moon, stars), fog, sun and
  * ambient light, exposure, ground tint, colour grade, and bloom strength.
  *
+ * Time passes on its own (see PHASE_SECONDS): every frame the two
+ * neighbouring presets are blended, then the weather (overcast, snow) is
+ * layered on top. `darkness` tells other systems when to switch lamps on.
+ *
  * Inspired by: Firewatch, A Short Hike, Journey, Proteus
  */
 
@@ -99,6 +103,17 @@ const PRESETS: Record<string, TimePreset> = {
 const TIME_ORDER = ['dawn', 'day', 'dusk', 'night'];
 const SUN_DISTANCE = 80; // how far the shadow-casting light sits from the focus point
 
+/**
+ * Time passes on its own: each phase (dawn, day, dusk, night) lasts this many
+ * seconds — it holds for the first half, then blends into the next phase.
+ * A full day is 4 × PHASE_SECONDS. Press N to skip ahead to the next phase.
+ */
+export const PHASE_SECONDS = 180;
+const SKIP_SPEED = 0.5;   // phases per second while N is fast-forwarding
+
+const OVERCAST_GREY = new THREE.Color(0x8a929c);
+const SNOW_GROUND = new THREE.Color(0xe2e8ef);
+
 export interface PostFX {
   bloom: UnrealBloomPass;
   grade: GradeUniforms;
@@ -113,10 +128,24 @@ export class DayNightCycle {
   private groundMesh: THREE.Mesh | null = null;
   readonly sky: SkyDome;
 
-  private currentIndex: number = 1; // start at day
-  private targetPreset: TimePreset;
-  private transitionProgress: number = 1;
+  /** Time of day in phases: 0 = dawn, 1 = day, 2 = dusk, 3 = night (wraps at 4) */
+  private clock: number = 1;
+  /** Where the clock is heading when N fast-forwards it */
+  private clockTarget: number = 1;
   private sunDir = new THREE.Vector3();
+  private _tmpDir = new THREE.Vector3();
+  private _tmpColor = new THREE.Color();
+  private _darkness = 0;
+  private boost = 0;
+
+  /** Let time pass on its own during play */
+  autoAdvance = true;
+  /** 0..1 cloud cover (set by the weather): dimmer sun, greyer sky, closer fog */
+  overcast = 0;
+  /** 0..1 snow on the ground (snowy routes) */
+  snowCover = 0;
+  /** Set to 1 while grinding: brightens exposure at night so sparks pop */
+  grindBoost = 0;
 
   currentName: string = 'DAY';
 
@@ -138,8 +167,7 @@ export class DayNightCycle {
     // The light's target must be in the scene so we can move it with the grinder
     scene.add(this.sun.target);
 
-    this.targetPreset = PRESETS[TIME_ORDER[this.currentIndex]];
-    this.applyPreset(this.targetPreset);
+    this.applyClock();
   }
 
   /** Set the ground mesh so we can tint it with the palette */
@@ -147,29 +175,39 @@ export class DayNightCycle {
     this.groundMesh = mesh;
   }
 
+  /** Jump straight to the start of a phase ('dawn' | 'day' | 'dusk' | 'night') */
   setTime(name: string): void {
     const idx = TIME_ORDER.indexOf(name);
     if (idx >= 0) {
-      this.currentIndex = idx;
-      this.targetPreset = PRESETS[name];
-      this.currentName = this.targetPreset.name;
-      this.transitionProgress = 0;
+      this.clock = this.clockTarget = idx;
+      this.applyClock();
     }
   }
 
+  /** Fast-forward smoothly to the start of the next phase (key N) */
   cycleTime(): void {
-    this.currentIndex = (this.currentIndex + 1) % TIME_ORDER.length;
-    this.targetPreset = PRESETS[TIME_ORDER[this.currentIndex]];
-    this.currentName = this.targetPreset.name;
-    this.transitionProgress = 0;
+    this.clockTarget = Math.floor(this.clockTarget) + 1;
+  }
+
+  /** Which phase we're mostly in right now (0..3) */
+  private get phaseIndex(): number {
+    return Math.floor(this.clock + 0.25) % TIME_ORDER.length;
   }
 
   get isNight(): boolean {
-    return this.currentIndex === 3;
+    return this.phaseIndex === 3;
   }
 
   get isDusk(): boolean {
-    return this.currentIndex === 2;
+    return this.phaseIndex === 2;
+  }
+
+  /**
+   * 0 (bright day) .. 1 (dark night), changing smoothly as time passes.
+   * Headlights, beacons and lineside lamps use this to fade in.
+   */
+  get darkness(): number {
+    return this._darkness;
   }
 
   /** Current fog/horizon colour (used by the ground mist) */
@@ -195,9 +233,83 @@ export class DayNightCycle {
     this.sun.target.position.copy(focus);
     this.sun.target.updateMatrixWorld();
 
-    if (this.transitionProgress >= 1) return;
-    this.transitionProgress = Math.min(1, this.transitionProgress + dt * 0.4);
-    this.blendToward(this.targetPreset, this.smoothstep(this.transitionProgress));
+    // Advance time: on its own, plus fast-forward toward clockTarget after N
+    const step = this.autoAdvance ? dt / PHASE_SECONDS : 0;
+    this.clockTarget += step;
+    this.clock += step;
+    const behind = this.clockTarget - this.clock;
+    if (behind > 0) this.clock += Math.min(behind, SKIP_SPEED * dt);
+    if (this.clock >= TIME_ORDER.length) {
+      this.clock -= TIME_ORDER.length;
+      this.clockTarget -= TIME_ORDER.length;
+    }
+
+    this.boost += (this.grindBoost - this.boost) * Math.min(1, 3 * dt);
+    this.applyClock();
+  }
+
+  /**
+   * Set every lighting value for the current clock: blend the two neighbouring
+   * presets, then layer weather (overcast, snow) and the grinding boost on top.
+   */
+  private applyClock(): void {
+    const i = Math.floor(this.clock) % TIME_ORDER.length;
+    const a = PRESETS[TIME_ORDER[i]];
+    const b = PRESETS[TIME_ORDER[(i + 1) % TIME_ORDER.length]];
+    // Hold the phase for the first half, then ease into the next one
+    const frac = this.clock - Math.floor(this.clock);
+    const f = this.smoothstep(Math.max(0, Math.min(1, (frac - 0.5) / 0.5)));
+
+    this.sunDir.copy(a.sunDirection).normalize();
+    this.blendToward(a, 1); // copy phase A exactly…
+    this.blendToward(b, f); // …then move part of the way toward phase B
+    this.currentName = PRESETS[TIME_ORDER[this.phaseIndex]].name;
+
+    // How dark is it? Based on the brightness of the sky overhead
+    const z = this.sky.uniforms.uZenith.value;
+    const lum = 0.2126 * z.r + 0.7152 * z.g + 0.0722 * z.b;
+    this._darkness = Math.max(0, Math.min(1, 1 - lum / 0.08));
+
+    this.applyWeather();
+
+    // Grinding in the dark: lift exposure so the sparks light up the scene
+    const boost = this.boost * this._darkness;
+    this.renderer.toneMappingExposure += (1.6 - this.renderer.toneMappingExposure) * boost;
+  }
+
+  /** Clouds grey out the sky and dim the sun; snow whitens the ground */
+  private applyWeather(): void {
+    const o = this.overcast;
+    const sky = this.sky.uniforms;
+    if (o > 0.001) {
+      const fog = this.scene.fog as THREE.Fog;
+      // Grey at the fog's own brightness, so overcast nights stay dark
+      const l = fog.color.r * 0.3 + fog.color.g * 0.59 + fog.color.b * 0.11;
+      const grey = this._tmpColor.copy(OVERCAST_GREY).multiplyScalar(Math.min(1.2, l * 1.6 + 0.02));
+      fog.color.lerp(grey, 0.65 * o);
+      (this.scene.background as THREE.Color).copy(fog.color);
+      fog.near *= 1 - 0.5 * o;
+      fog.far *= 1 - 0.45 * o;
+      sky.uHorizon.value.lerp(grey, 0.7 * o);
+      sky.uZenith.value.lerp(grey, 0.6 * o);
+      sky.uSunGlow.value *= 1 - o;
+      sky.uSunColor.value.lerp(sky.uHorizon.value, o);
+      sky.uStars.value *= 1 - o;
+      this.sun.intensity *= 1 - 0.65 * o;
+      this.ambient.intensity *= 1 - 0.1 * o;
+      if (this.post) this.post.grade.uSaturation.value *= 1 - 0.25 * o;
+      this._darkness = Math.min(1, this._darkness + 0.15 * o);
+    }
+    const s = this.snowCover;
+    if (s > 0.001) {
+      if (this.groundMesh) {
+        (this.groundMesh.material as THREE.MeshStandardMaterial).color.lerp(SNOW_GROUND, 0.85 * s);
+      }
+      sky.uGround.value.lerp(this._tmpColor.copy(SNOW_GROUND).multiplyScalar(0.6), 0.85 * s);
+      // Snow catches the moonlight: snowy nights are noticeably brighter
+      this.ambient.intensity += 0.45 * s * this._darkness;
+      this.ambient.groundColor.lerp(this.ambient.color, 0.5 * s);
+    }
   }
 
   /** Move every value a fraction t of the way toward preset p */
@@ -205,12 +317,12 @@ export class DayNightCycle {
     const sky = this.sky.uniforms;
     sky.uZenith.value.lerp(p.zenithColor, t);
     sky.uHorizon.value.lerp(p.horizonColor, t);
-    sky.uGround.value.lerp(p.groundColor.clone().multiplyScalar(0.6), t);
+    sky.uGround.value.lerp(this._tmpColor.copy(p.groundColor).multiplyScalar(0.6), t);
     sky.uSunColor.value.lerp(p.skySunColor, t);
     sky.uSunSize.value += (p.sunSize - sky.uSunSize.value) * t;
     sky.uSunGlow.value += (p.sunGlow - sky.uSunGlow.value) * t;
     sky.uStars.value += (p.stars - sky.uStars.value) * t;
-    this.sunDir.lerp(p.sunDirection.clone().normalize(), t).normalize();
+    this.sunDir.lerp(this._tmpDir.copy(p.sunDirection).normalize(), t).normalize();
     sky.uSunDir.value.copy(this.sunDir);
 
     (this.scene.background as THREE.Color).lerp(p.horizonColor, t);
@@ -240,13 +352,6 @@ export class DayNightCycle {
       g.uContrast.value += (p.contrast - g.uContrast.value) * t;
       this.post.bloom.strength += (p.bloomStrength - this.post.bloom.strength) * t;
     }
-  }
-
-  /** Jump straight to a preset (no transition) */
-  private applyPreset(p: TimePreset): void {
-    // Blending with t = 1 copies every value exactly
-    this.sunDir.copy(p.sunDirection).normalize();
-    this.blendToward(p, 1);
   }
 
   private smoothstep(t: number): number {

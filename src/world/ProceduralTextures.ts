@@ -163,3 +163,39 @@ export function createGroundTexture(width = 512, height = 512): THREE.CanvasText
   tex.repeat.set(20, 20);
   return tex;
 }
+
+/** Snowy ground: soft white drifts with a few tufts of grass poking through */
+export function createSnowGroundTexture(width = 512, height = 512): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#e4e9ef';
+  ctx.fillRect(0, 0, width, height);
+
+  // Drifts: soft lighter and bluish-shadow blobs
+  for (let i = 0; i < 120; i++) {
+    const x = Math.random() * width;
+    const y = Math.random() * height;
+    const r = 10 + Math.random() * 40;
+    const shadow = Math.random() < 0.5;
+    ctx.fillStyle = shadow ? 'rgba(170,185,210,0.18)' : 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * 0.6, Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Grass tufts and dirt showing through
+  for (let i = 0; i < 700; i++) {
+    const x = Math.random() * width;
+    const y = Math.random() * height;
+    ctx.fillStyle = Math.random() < 0.7 ? 'rgba(80,95,60,0.55)' : 'rgba(100,85,65,0.45)';
+    ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 3);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(20, 20);
+  return tex;
+}

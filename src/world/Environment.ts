@@ -17,7 +17,17 @@ export interface EnvironmentOptions {
    * beyond: metres from the track centre where the clear zone starts.
    */
   clearSide?: { side: -1 | 1; beyond: number };
+  /** Extra no-scenery areas (roads, landmarks): return true to keep (x, z) clear */
+  blocked?: (x: number, z: number) => boolean;
+  /** 0..1 snow on the trees, grass and hills (snowy routes) */
+  snow?: number;
+  /** How much woodland: 1 = forest (default), lower = open country */
+  trees?: number;
+  /** Distant mountain ranges: 0 = none (flat horizon), 1 = default, >1 = taller */
+  mountains?: number;
 }
+
+const SNOW_WHITE = new THREE.Color(0xe6ecf2);
 
 export class Environment {
   readonly group: THREE.Group;
@@ -47,6 +57,24 @@ export class Environment {
     this.addTrackSideDetails();
     this.addDistantMountains();
     // (stars now come from the SkyDome shader, which fades them in only at night)
+    if (options.snow) this.applySnow(options.snow);
+  }
+
+  /**
+   * Snow-covered look: whiten anything green (trees, bushes, grass, hills)
+   * and lightly dust the rocks and mountains. Done once, after building.
+   */
+  private applySnow(amount: number): void {
+    const seen = new Set<THREE.Material>();
+    this.group.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (!mat || seen.has(mat) || !(mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) return;
+      seen.add(mat);
+      const c = mat.color;
+      const greenish = c.g > c.r && c.g > c.b;
+      if (mat.emissiveIntensity > 0.1 && !greenish) return; // signal lamps etc.
+      c.lerp(SNOW_WHITE, (greenish ? 0.6 : 0.3) * amount);
+    });
   }
 
   /**
@@ -59,6 +87,17 @@ export class Environment {
       const p = this.track.getTrackPoint(d).position;
       this.centerLookup.push({ z: p.z, x: p.x });
     }
+  }
+
+  /** Furthest z the scenery needs to cover (the end of the route, plus a margin) */
+  private get zEnd(): number {
+    const t = this.centerLookup;
+    return t.length ? t[t.length - 1].z + 20 : 370;
+  }
+
+  /** Scenery counts were tuned for a ~390 m stretch; longer routes get more */
+  private get lengthScale(): number {
+    return Math.max(1, (this.zEnd + 20) / 390);
   }
 
   /** x of the track centre line at a given z (interpolated) */
@@ -117,6 +156,7 @@ export class Environment {
   /** True if scenery can't go here: on/near a track, or in the clear zone (ocean) */
   private isOnTrack(x: number, z: number): boolean {
     if (this.isInClearZone(x, z)) return true;
+    if (this.options.blocked?.(x, z)) return true;
     if (!this.track) return Math.abs(x - this.trackCenterX(z)) < 8;
     if (this.occupancyGrid) {
       const cell = Environment.GRID_CELL;
@@ -143,8 +183,8 @@ export class Environment {
   // ---- TERRAIN ----
   private addTerrain(): void {
     const dirtMat = new THREE.MeshStandardMaterial({ color: 0x6b5a40, roughness: 1 });
-    for (let i = 0; i < 60; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 60 * this.lengthScale; i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const s = Math.random() > 0.5 ? 1 : -1;
       const x = tx + s * this.rand(6, 15);
@@ -154,8 +194,8 @@ export class Environment {
     }
     // Hills
     const hillMat = new THREE.MeshStandardMaterial({ color: 0x3a6a30, roughness: 0.9 });
-    for (let i = 0; i < 30; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 30 * this.lengthScale; i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const s = Math.random() > 0.5 ? 1 : -1;
       const r = this.rand(3, 6);
@@ -205,8 +245,8 @@ export class Environment {
 
     // Generate positions first
     const positions: { x: number; z: number; scale: number; rot: number }[] = [];
-    for (let i = 0; i < 400; i++) {
-      const z = this.rand(-20, 370);
+    for (let i = 0; i < 400 * this.lengthScale * (this.options.trees ?? 1); i++) {
+      const z = this.rand(-20, this.zEnd + 10);
       const tx = this.trackCenterX(z);
       const s = Math.random() > 0.5 ? 1 : -1;
       const x = tx + s * this.rand(5, 50);
@@ -247,8 +287,8 @@ export class Environment {
     const decGeo = new THREE.DodecahedronGeometry(1, 1);
     const decMat = new THREE.MeshStandardMaterial({ color: 0x3a7a2a, flatShading: true });
     const decPositions: typeof positions = [];
-    for (let i = 0; i < 100; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 100 * this.lengthScale * Math.min(1, (this.options.trees ?? 1) * 1.5); i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const si = Math.random() > 0.5 ? 1 : -1;
       const x = tx + si * this.rand(6, 45);
@@ -285,8 +325,8 @@ export class Environment {
     const positions: THREE.Matrix4[] = [];
     const m = new THREE.Matrix4();
 
-    for (let i = 0; i < 300; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 300 * this.lengthScale; i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const si = Math.random() > 0.5 ? 1 : -1;
       const x = tx + si * this.rand(4, 25);
@@ -312,8 +352,8 @@ export class Environment {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
 
-    for (let i = 0; i < 150; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 150 * this.lengthScale; i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const si = Math.random() > 0.5 ? 1 : -1;
       const x = tx + si * this.rand(4, 30);
@@ -337,8 +377,8 @@ export class Environment {
     const positions: THREE.Matrix4[] = [];
     const m = new THREE.Matrix4();
 
-    for (let i = 0; i < 1000; i++) {
-      const z = this.rand(-10, 360);
+    for (let i = 0; i < 1000 * this.lengthScale; i++) {
+      const z = this.rand(-10, this.zEnd);
       const tx = this.trackCenterX(z);
       const x = tx + (Math.random() - 0.5) * 50;
       if (this.isOnTrack(x, z)) continue;
@@ -360,7 +400,7 @@ export class Environment {
       const fmat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.15 });
       const fpos: THREE.Matrix4[] = [];
       for (let i = 0; i < 30; i++) {
-        const z = this.rand(0, 350);
+        const z = this.rand(0, this.zEnd);
         const tx = this.trackCenterX(z);
         const x = tx + (Math.random() - 0.5) * 40;
         if (this.isOnTrack(x, z)) continue;
@@ -376,21 +416,35 @@ export class Environment {
     }
   }
 
+  /**
+   * Lineside objects stand at fixed distances from the track centre, measured
+   * along the track's "right" direction so they stay put on curves too.
+   * The adjacent track (+5 m) carries freight trains about 2.8 m wide, so
+   * nothing may stand between ~3.4 and ~6.6 m on the right.
+   */
+  private placeLineside(g: THREE.Object3D, dist: number, lateral: number): boolean {
+    const p = this.getTrackSidePoint(dist, lateral);
+    if (this.options.blocked?.(p.x, p.z) || this.isInClearZone(p.x, p.z)) return false;
+    g.position.set(p.x, -0.6, p.z);
+    g.rotation.y = p.angle;
+    this.group.add(g);
+    return true;
+  }
+
   // ---- TELEGRAPH POLES ----
   private addTelegraphPoles(): void {
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.85 });
     const insMat = new THREE.MeshStandardMaterial({ color: 0xcccccc });
+    const len = this.track ? this.track.totalLength : 350;
 
-    for (let z = 0; z < 350; z += 20) {
-      const tx = this.trackCenterX(z);
+    for (let d = 0; d < len; d += 20) {
       const g = new THREE.Group();
       g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 7, 6), poleMat)).position.y = 3.5;
       g.add(new THREE.Mesh(new THREE.BoxGeometry(2, 0.05, 0.05), poleMat)).position.y = 6.5;
       for (const ix of [-0.7, -0.3, 0, 0.3, 0.7]) {
         g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.1, 4), insMat)).position.set(ix, 6.6, 0);
       }
-      g.position.set(tx + 8, -0.6, z);
-      this.group.add(g);
+      this.placeLineside(g, d, 9.5); // well clear of the adjacent track
     }
   }
 
@@ -398,34 +452,35 @@ export class Environment {
   private addTrackSideDetails(): void {
     const metalMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 });
     const signMat = new THREE.MeshStandardMaterial({ color: 0xcccc00 });
+    const len = this.track ? this.track.totalLength : 350;
 
-    // Mileposts
-    for (let z = 50; z < 350; z += 50) {
-      const tx = this.trackCenterX(z);
+    // Mileposts (beyond the adjacent track, so passing trains miss them)
+    for (let d = 50; d < len; d += 50) {
       const g = new THREE.Group();
       g.add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 1, 0.05), metalMat)).position.y = 0.5;
-      g.add(new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.18, 0.03), signMat)).position.y = 0.9;
-      g.position.set(tx + 3.5, -0.6, z);
-      this.group.add(g);
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.18, 0.25), signMat)).position.y = 0.9;
+      this.placeLineside(g, d, 7.4);
     }
 
-    // Signals
-    for (const sz of [5, 180]) {
-      const tx = this.trackCenterX(sz);
+    // Signals (also beyond the adjacent track)
+    const redMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.5 });
+    const greenMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00ff00, emissiveIntensity: 0.5 });
+    for (const d of [8, Math.round(len * 0.45) + 12]) {
       const g = new THREE.Group();
       g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 5, 6), metalMat)).position.y = 2.5;
-      g.add(new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.7, 0.18), metalMat)).position.y = 5.2;
-      const redMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.5 });
-      const greenMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00ff00, emissiveIntensity: 0.5 });
-      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), redMat)).position.set(0, 5.4, 0.1);
-      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), greenMat)).position.set(0, 5.0, 0.1);
-      g.position.set(tx + 4, -0.6, sz);
-      this.group.add(g);
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.7, 0.35), metalMat)).position.y = 5.2;
+      // Lamps face back down the track, toward oncoming trains
+      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), redMat)).position.set(0, 5.4, -0.18);
+      g.add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), greenMat)).position.set(0, 5.0, -0.18);
+      this.placeLineside(g, d, 7.6);
     }
   }
 
+
   // ---- MOUNTAINS ----
   private addDistantMountains(): void {
+    const scale = this.options.mountains ?? 1;
+    if (scale <= 0) return; // flat country: an open horizon
     const layers = [
       { color: 0x1a3018, dist: 80, height: 20, count: 6 },
       { color: 0x3a5838, dist: 130, height: 30, count: 5 },
@@ -439,9 +494,9 @@ export class Environment {
         const side = i % 2 === 0 ? -1 : 1;
         // No mountains on the clear side (open ocean horizon on the coast job)
         if (this.options.clearSide && side === this.options.clearSide.side) continue;
-        const w = this.rand(35, 70), h = layer.height * (0.5 + Math.random() * 0.5);
+        const w = this.rand(35, 70), h = layer.height * scale * (0.5 + Math.random() * 0.5);
         const mt = new THREE.Mesh(new THREE.ConeGeometry(w, h, 5 + Math.floor(Math.random() * 3)), mat);
-        const z = (i / layer.count) * 420 - 30;
+        const z = (i / layer.count) * (this.zEnd + 60) - 30;
         mt.position.set(this.trackCenterX(z) + side * layer.dist + this.rand(-20, 50), h / 2 - 8, z);
         mt.rotation.y = Math.random() * Math.PI;
         this.group.add(mt);

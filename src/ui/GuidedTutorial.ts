@@ -136,7 +136,7 @@ export class GuidedTutorial {
         if (state.pressureChanged || this.phaseTimer > 10) {
           this.showPrompt(`
             <span style="color:var(--ui-green);">You're ready!</span> Grind all sections to lift the slow orders.
-            <div style="font-size:11px;color:var(--ui-dim);margin-top:4px;">SHIFT+W = fast travel &nbsp; 1-5 = cameras &nbsp; N = time &nbsp; P = rain</div>
+            <div style="font-size:11px;color:var(--ui-dim);margin-top:4px;">SHIFT+W = fast travel &nbsp; 1-5 = cameras &nbsp; N = time &nbsp; P = rain/snow</div>
           `);
           this.phase = 'free_play';
           this.phaseTimer = 0;

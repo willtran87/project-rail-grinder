@@ -14,7 +14,7 @@ import { DustSystem } from './DustSystem';
 import type { RailTrack } from '../rail/RailTrack';
 
 /** Car offsets (m from grinderPosition) of the four grinding cars */
-const GRIND_CAR_OFFSETS = [-12, 0, 12, 24];
+export const GRIND_CAR_OFFSETS = [-12, 0, 12, 24];
 const STONES_PER_CAR = 8;
 /** Work lights: headlight, front grind area, rear grind area, tail */
 const LIGHT_OFFSETS = [-42, -6, 18, 67];

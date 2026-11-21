@@ -5,7 +5,7 @@
  *   drag mouse / arrow keys  orbit the camera
  *   mouse wheel / W S        zoom in and out
  *   A / D                    slide along the track
- *   N / P                    time of day / rain (handled by Game)
+ *   N / P                    skip time of day / rain or snow (handled by Game)
  *   K                        save a PNG
  *   F or ESC                 exit
  *
@@ -45,7 +45,7 @@ export class PhotoMode {
     `;
     this.hint.innerHTML = `<span style="color:#e8a020">PHOTO MODE</span> &nbsp;
       drag / arrows: orbit &nbsp;·&nbsp; wheel / W S: zoom &nbsp;·&nbsp; A D: slide &nbsp;·&nbsp;
-      N: time &nbsp;·&nbsp; P: rain &nbsp;·&nbsp; <span style="color:#e8a020">K: save</span> &nbsp;·&nbsp; F: exit`;
+      N: time &nbsp;·&nbsp; P: rain/snow &nbsp;·&nbsp; <span style="color:#e8a020">K: save</span> &nbsp;·&nbsp; F: exit`;
     document.body.appendChild(this.hint);
   }
 

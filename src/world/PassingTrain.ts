@@ -102,6 +102,15 @@ export class PassingTrain {
 
   setAudioContext(ctx: AudioContext): void { this.audioCtx = ctx; }
 
+  /**
+   * Where the train is right now, as distances along the track
+   * (null when no train is passing). Level crossings use this.
+   */
+  span(): { front: number; rear: number; speed: number } | null {
+    if (!this.active) return null;
+    return { front: this.position + 9, rear: this.position - 103, speed: this.speed };
+  }
+
   update(dt: number, grinderDist: number): void {
     if (!this.active) {
       this.timer += dt;
@@ -119,6 +128,11 @@ export class PassingTrain {
       const clamp = (d: number) => Math.max(0.1, Math.min(this.totalLength - 0.1, d));
 
       for (const car of this.cars) {
+        // Cars beyond either end of the track are hidden (otherwise they'd all
+        // be clamped to the track end and pile up in one spot)
+        const centre = this.position + car.offset;
+        car.group.visible = centre - car.halfLen > 0 && centre + car.halfLen < this.totalLength;
+        if (!car.group.visible) continue;
         const frontPt = this.track.getTrackPoint(clamp(this.position + car.offset + car.halfLen));
         const rearPt = this.track.getTrackPoint(clamp(this.position + car.offset - car.halfLen));
 
@@ -139,7 +153,9 @@ export class PassingTrain {
       this.hornPlayed = true;
     }
 
-    if (this.position > grinderDist + 200) {
+    // Done once the last car has run off the end of the track (it used to
+    // vanish all at once 200 m past the grinder, sometimes in plain view)
+    if (this.position - 103 > this.totalLength) {
       this.active = false;
       this.group.visible = false;
       this.timer = 0;

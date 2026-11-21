@@ -7,7 +7,11 @@
  * - Completion ding (synthesized bell tone)
  * - Diesel rumble (low-frequency oscillator)
  * - Wind ambient (filtered noise)
+ * - Route ambience: birds, crickets, surf, traffic, crossing bell (see Ambience.ts)
  */
+
+import { Ambience } from './Ambience';
+import type { Region } from '../types/rail';
 
 export class AudioManager {
   private ctx: AudioContext | null = null;
@@ -28,6 +32,25 @@ export class AudioManager {
   private initialized = false;
   private _muted = false;
 
+  // Route-specific background sound (birds, surf, traffic, crossing bell…)
+  private ambience: Ambience | null = null;
+  private region: Region = 'prairie';
+
+  /** Which route's background sounds to play (safe to call before init) */
+  setRegion(region: Region): void {
+    this.region = region;
+    this.ambience?.setRegion(region);
+  }
+
+  /**
+   * Call every frame during play.
+   * @param darkness - 0 day .. 1 night; @param rain / @param snow - 0..1;
+   * @param bell - 0..1 level-crossing bell loudness
+   */
+  updateAmbience(dt: number, darkness: number, rain: number, snow: number, bell: number): void {
+    this.ambience?.update(dt, darkness, rain, snow, bell);
+  }
+
   /** Must be called from a user gesture (click/key) to unlock audio */
   init(): void {
     if (this.initialized) return;
@@ -40,6 +63,8 @@ export class AudioManager {
 
       this.setupDiesel();
       this.setupWind();
+      this.ambience = new Ambience(this.ctx, this.masterGain, this.createNoiseBuffer(4));
+      this.ambience.setRegion(this.region);
       this.initialized = true;
     } catch {
       // Web Audio not supported

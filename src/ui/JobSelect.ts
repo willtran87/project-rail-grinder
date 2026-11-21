@@ -6,6 +6,7 @@
  */
 
 import * as THREE from 'three';
+import type { Region } from '../types/rail';
 import { loadRecords, formatTime, type JobRecord } from '../game/progress';
 import {
   loadCareer, saveCareer, buyUpgrade, nextUpgradeCost, jobPay, isUnlocked, totalBestStars,
@@ -26,6 +27,8 @@ export interface JobDefinition {
   trackPoints: THREE.Vector3[];
   /** Special scenery for this route ('coast' = ocean + beach on the west side) */
   scenery?: 'coast';
+  /** Kind of place: picks the landmarks, weather climate and background sounds */
+  region: Region;
   /** Contract pay at 5★ ≈ 115% of this (see career.jobPay) */
   basePay: number;
   /** Total best stars (across all jobs) needed to take this contract */
@@ -35,6 +38,7 @@ export interface JobDefinition {
 export const JOBS: JobDefinition[] = [
   {
     id: 'transcon',
+    region: 'prairie',
     name: 'BNSF Transcon — Emporia Sub',
     location: 'Kansas',
     description: 'The Southern Transcon is one of America\'s busiest freight corridors. Long straights across the Great Plains with 100M+ gross tons annually. Head checking and corrugation from high-speed intermodal traffic at 60-70 mph.',
@@ -65,6 +69,7 @@ export const JOBS: JobDefinition[] = [
   },
   {
     id: 'marias',
+    region: 'mountain',
     name: 'BNSF Hi-Line — Marias Pass',
     location: 'Montana',
     description: 'Crossing the Continental Divide at 5,213 ft — the lowest rail crossing of the Rockies. Sharp 4-8 degree curves on the western descent with heavy coal and grain unit trains. Severe gauge face wear and cold-weather fracture risk.',
@@ -105,6 +110,7 @@ export const JOBS: JobDefinition[] = [
   },
   {
     id: 'clearing',
+    region: 'city',
     name: 'BRC Clearing Yard Approach',
     location: 'Chicago, IL',
     description: 'Belt Railway of Chicago — where 25% of US rail freight converges. Tight urban curves around Clearing Yard. Constant stop-and-go traffic causes severe rail crush, corrugation, and switch wear. Night shift on the busiest rail junction in America.',
@@ -140,6 +146,7 @@ export const JOBS: JobDefinition[] = [
   },
   {
     id: 'coast',
+    region: 'coast',
     name: 'UP Coast Sub — Surf to SLO',
     location: 'California',
     description: 'Union Pacific\'s Coast Subdivision between Surf and San Luis Obispo. Tracks run directly along the Pacific Ocean. Salt spray corrosion, base pitting, and mixed-traffic fatigue from Amtrak Coast Starlight and UP freight. Dawn start for golden hour over the ocean.',

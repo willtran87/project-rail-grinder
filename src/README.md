@@ -36,16 +36,20 @@ src/
 │   ├── GroundMist.ts        # Drifting low haze, clear near the grinder
 │   ├── Ocean.ts             # Coast job: wave shader sea + beach following the track
 │   ├── SlowOrderSigns.ts    # Yellow speed boards that flip green when cleared
+│   ├── Landmarks.ts         # Per-route landmarks + level crossings (gates, bell, cars)
+│   ├── ConsistLights.ts     # Headlight spot + visible beam, fades in with darkness
 │   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
-│   ├── Weather.ts           # Rain particle system
-│   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
+│   ├── Weather.ts           # Rain streaks / snow + per-route climate "director"
+│   ├── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
+│   └── Train.ts             # Standalone freight-train model (currently unused)
 ├── effects/
 │   ├── GrindEffects.ts      # Sparks + dust + work lights + contact glow, per frame
 │   ├── DustSystem.ts        # Billowing grinding-dust puffs (custom point shader)
 │   ├── SparkSystem.ts       # Grinding sparks drawn as glowing streaks (800 max)
 │   └── GrindContact.ts      # Glowing contact point and ground trail
 ├── audio/
-│   └── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
+│   ├── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
+│   └── Ambience.ts          # Per-route background sounds + crossing bell
 ├── ui/
 │   ├── TrackMap.ts           # Top-of-screen track progress strip
 │   ├── ProfileRenderer.ts   # (in rail/) Dual rail profile displays
@@ -147,6 +151,10 @@ Edit `src/ui/JobSelect.ts` and add an entry to the `JOBS` array:
   sections: 15,
   defectSeverity: 0.7,       // 0-1, scales defect depth (Easy 0.55 … Expert 1.0)
   timeOfDay: 1,              // 0=dawn, 1=day, 2=dusk, 3=night
+  region: 'mountain',        // 'prairie' | 'mountain' | 'city' | 'coast' — landmarks, weather, sounds
+  basePay: 9000,             // career pay; 5★ pays ≈115% of this (career.jobPay)
+  starsToUnlock: 3,          // total best stars across all jobs needed to play it
+  scenery: 'coast',          // optional: ocean + beach on the west side
   trackPoints: [
     new THREE.Vector3(x, 0, z),  // control points for CatmullRom spline
     // ... more points define the route's curves
@@ -156,11 +164,34 @@ Edit `src/ui/JobSelect.ts` and add an entry to the `JOBS` array:
 
 Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map marker.
 
+### Living World: Time, Weather, Regions
+- **Time of day** (`DayNightCycle`): a `clock` runs 0→4 (dawn, day, dusk, night). Each phase lasts `PHASE_SECONDS` — it holds for the first half, then blends into the next. Every frame the two neighbouring presets are blended, then weather is layered on top (`overcast` greys the sky and dims the sun; `snowCover` whitens the ground). `darkness` (0..1) is what headlights, beacons, lamps and windows read.
+- **Weather** (`Weather`): each `Region` has a climate (`CLIMATES`) — rain or snow, how often, how heavy. A small director picks a new state every 50–120 s and everything eases toward it. P forces showers on/off.
+- **Region** (`types/rail.ts`, set per job in `JobSelect`): picks the landmarks, the climate, the background sounds and the countryside (`REGION_SCENERY` in `Game.ts`: tree density and distant mountains — none on the prairie or in Chicago).
+- **Slow orders** (`Game.slowOrderSpeedLimit`): 2 m/s inside one; ahead of one, the speed that can still brake (10 m/s²) down to the limit in time. SHIFT fast travel never raises it.
+- **Landmarks**: static parts are merged into one mesh per material ("baked"), so a whole route of landmarks costs only a handful of draw calls. `blocks(x, z)` is passed to `Environment` so trees stay off roads and landmarks.
+- **Level crossings**: `Game.crossingOccupancy()` reports the stretches of track the grinder and any passing freight are on, plus ~6 s of travel ahead. A crossing closes when its spot is inside one of them. Cars stop at the stop line (x = +12 / −8). Only a car already between the lines when the lights start may carry on and clear the tracks.
+- **Clearances**: nothing may stand within ~2.2 m of the main track centre, or 3.3–6.7 m on the right where the adjacent track's freight passes. Lineside poles, mileposts and signals are placed by distance along the track (`Environment.placeLineside`) so they stay clear on curves too.
+- **Hot rail** (`RailSegment.heatUp`): `Game.handleGrinding` heats the segments under each grinding car; they cool in `update()` over ~3.5 s.
+
+### Career Mode
+`game/career.ts` is pure logic (no DOM): pay per contract from stars, upgrade prices and effects, and unlock checks from total career stars. `JobSelect` shows the balance, locks contracts and runs the upgrade shop; `Game` applies upgrade multipliers (heat, removal rate, stone width) when a job starts and pays out on completion. Balance numbers live in `career.ts` and `rules.ts`. Add `?unlock` to the URL to open every contract while testing.
+
+### Graphics Quality
+`core/quality.ts` holds three presets; `Game.applyQuality()` applies them. G cycles them and the choice is saved.
+
+| Preset | Bloom | Shadows | Ground mist | Dust |
+|--------|-------|---------|-------------|------|
+| High   | on    | 1024²   | on          | 100% |
+| Medium | on    | 512²    | off         | 50%  |
+| Low    | off   | off     | off         | 25%  |
+
 ## Performance Notes
 
 - **Target**: 60fps on modern hardware at 1080p
 - **Main bottleneck**: `RailSegment.rebuildMesh()` during grinding (ExtrudeGeometry rebuild)
-- **Light count**: 7 total (1 directional, 1 hemisphere, 4 work lights, 1 spark light)
-- **Shadows**: 1024² map covering ±45m around the grinder — the most expensive pass now that it covers the train
+- **Light count**: 8 total (1 directional, 1 hemisphere, 4 work lights, 1 spark light, 1 headlight spot — no shadows)
+- **Shadows**: 1024² map (High) covering ±45m around the grinder — the most expensive pass; drop to Medium/Low with G
 - **Draw calls**: ties and ballast are instanced too (one call each instead of ~800)
-- **Particle count**: 800 sparks + 2000 rain (when active)
+- **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)
+- **Measure**: backtick toggles the FPS / frame-time counter
