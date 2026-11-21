@@ -89,6 +89,7 @@ Four contracts based on real US railroad corridors:
 - **Lights at night:** the headlight throws a visible beam (stronger in rain and snow), and the beacons flash brighter.
 - **Landmarks:** a grain elevator, windmill and cattle in Kansas; a summit obelisk, fire lookout and log cabin at Marias Pass; the Chicago skyline (lit windows at night), warehouses and a signal gantry; a lighthouse with a sweeping beam, palms and a lifeguard tower on the coast.
 - **Level crossings:** lights flash, the bell rings and the gates come down as the grinder approaches, and cars wait for you.
+- **Railroad rules:** freight on the next track slows to 25 mph past your work zone, and rain and snow stop at the train roofs.
 - **Sounds of the place:** birdsong or crickets on the prairie, wind and hawks in the mountains, traffic and horns in the city, surf and gulls on the coast, plus rain hiss.
 
 ## Tech Stack

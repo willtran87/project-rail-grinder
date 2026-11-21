@@ -10,6 +10,30 @@ import { createBallastGeometry, createBallastMaterial } from './trackBed';
 const ADJACENT_OFFSET = 5; // meters to the side
 const GAUGE_HALF = 0.8;
 
+/** Trains on the next track pass the work crew at restricted speed (~25 mph) */
+export const WORK_ZONE_SPEED = 11;   // m/s
+const FREIGHT_BRAKE = 1.5;           // m/s² — gentle, like a heavy train
+const FREIGHT_ACCEL = 0.5;           // m/s²
+
+/**
+ * Fastest the freight may go right now. Railroads slow trains on the adjacent
+ * track while a work crew is out, so the train brakes before it reaches the
+ * work zone (the grinder plus a margin), crawls past, then speeds back up.
+ *
+ * @param front / rear - the train's ends (distance along the track)
+ * @param zoneStart / zoneEnd - the work zone (distance along the track)
+ * @param cruise - the train's normal speed
+ */
+export function freightAllowedSpeed(
+  front: number, rear: number, zoneStart: number, zoneEnd: number, cruise: number,
+): number {
+  if (rear > zoneEnd) return cruise;               // fully past the work zone
+  if (front >= zoneStart) return WORK_ZONE_SPEED;  // some of it is in the zone
+  // Approaching: the speed that can still brake down to WORK_ZONE_SPEED in time
+  const room = zoneStart - front;
+  return Math.min(cruise, Math.sqrt(WORK_ZONE_SPEED ** 2 + 2 * FREIGHT_BRAKE * room));
+}
+
 export class PassingTrain {
   readonly group: THREE.Group;
   readonly adjacentTrack: THREE.Group;
@@ -24,6 +48,8 @@ export class PassingTrain {
   private active = false;
   private position = -100;
   private speed = 25;
+  /** Normal line speed for this pass (it slows below this near the work crew) */
+  private cruiseSpeed = 25;
   private timer = 0;
   private nextEventIn = 30 + Math.random() * 30;
   private hornPlayed = false;
@@ -118,6 +144,12 @@ export class PassingTrain {
       return;
     }
 
+    // Slow down past the work crew, speed back up afterwards
+    const allowed = freightAllowedSpeed(
+      this.position + 9, this.position - 103, grinderDist - 80, grinderDist + 100, this.cruiseSpeed);
+    this.speed = this.speed > allowed
+      ? Math.max(allowed, this.speed - FREIGHT_BRAKE * 1.4 * dt)
+      : Math.min(allowed, this.speed + FREIGHT_ACCEL * dt);
     this.position += this.speed * dt;
 
     // Position each car independently using front/rear bogie positions
@@ -166,8 +198,11 @@ export class PassingTrain {
   private startPass(grinderDist: number): void {
     this.active = true;
     this.group.visible = true;
-    this.position = grinderDist - 150;
-    this.speed = 20 + Math.random() * 15;
+    // Start far enough back to brake for the work zone before anyone sees it
+    this.position = grinderDist - 450;
+    this.cruiseSpeed = 20 + Math.random() * 15;
+    this.speed = Math.min(this.cruiseSpeed, freightAllowedSpeed(
+      this.position + 9, this.position - 103, grinderDist - 80, grinderDist + 100, this.cruiseSpeed));
     this.hornPlayed = false;
   }
 

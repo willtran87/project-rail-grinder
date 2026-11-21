@@ -83,3 +83,12 @@ export function sectionProgress(startMean: number, nowMean: number, completed: b
   if (startMean >= COMPLETION_ACCURACY) return nowMean >= COMPLETION_ACCURACY ? 0.95 : 0;
   return Math.max(0, Math.min(0.95, (nowMean - startMean) / (COMPLETION_ACCURACY - startMean)));
 }
+
+/**
+ * Fastest speed allowed `distanceAhead` metres before a lower speed limit,
+ * such that braking at `brake` m/s² still gets down to `limit` in time
+ * (v² = limit² + 2·brake·distance). Used for slow orders.
+ */
+export function approachSpeedLimit(limit: number, brake: number, distanceAhead: number): number {
+  return Math.sqrt(limit * limit + 2 * brake * Math.max(0, distanceAhead));
+}

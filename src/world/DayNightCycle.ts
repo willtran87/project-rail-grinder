@@ -92,10 +92,11 @@ const PRESETS: Record<string, TimePreset> = {
     zenithColor: c(0x050818), horizonColor: c(0x141c34), skySunColor: c(0xc8d4ff), // moon
     sunSize: 0.9995, sunGlow: 0.25, stars: 1,
     fogNear: 20, fogFar: 140,
-    sunColor: c(0x6688cc), sunIntensity: 0.3, sunDirection: new THREE.Vector3(-0.5, 0.65, 0.35),
-    ambientSkyColor: c(0x23305a), ambientGroundColor: c(0x0c141c), ambientIntensity: 0.35,
-    exposure: 1.05, groundColor: c(0x1e3a2a),
-    gradeLift: c(0x000610), gradeGain: c(0xeaf2ff), saturation: 0.92, contrast: 1.08,
+    // Moonlit rather than pitch black: you should still make out the scenery
+    sunColor: c(0x7090d0), sunIntensity: 0.5, sunDirection: new THREE.Vector3(-0.5, 0.65, 0.35),
+    ambientSkyColor: c(0x34477a), ambientGroundColor: c(0x18222e), ambientIntensity: 0.6,
+    exposure: 1.3, groundColor: c(0x2a4836),
+    gradeLift: c(0x0a1428), gradeGain: c(0xeaf2ff), saturation: 0.92, contrast: 1.0,
     bloomStrength: 0.85,
   },
 };
@@ -113,6 +114,20 @@ const SKIP_SPEED = 0.5;   // phases per second while N is fast-forwarding
 
 const OVERCAST_GREY = new THREE.Color(0x8a929c);
 const SNOW_GROUND = new THREE.Color(0xe2e8ef);
+
+/**
+ * Which two phases to blend for a clock value, and how far (f = 0..1).
+ * Each phase holds for the first half of its slot, then eases into the next.
+ * Phases: 0 dawn, 1 day, 2 dusk, 3 night (night blends back into dawn).
+ */
+export function phaseBlend(clock: number): { from: number; to: number; f: number } {
+  const n = TIME_ORDER.length;
+  const whole = Math.floor(clock);
+  const from = ((whole % n) + n) % n;
+  const frac = clock - whole;
+  const t = Math.max(0, Math.min(1, (frac - 0.5) / 0.5));
+  return { from, to: (from + 1) % n, f: t * t * (3 - 2 * t) };
+}
 
 export interface PostFX {
   bloom: UnrealBloomPass;
@@ -253,12 +268,9 @@ export class DayNightCycle {
    * presets, then layer weather (overcast, snow) and the grinding boost on top.
    */
   private applyClock(): void {
-    const i = Math.floor(this.clock) % TIME_ORDER.length;
-    const a = PRESETS[TIME_ORDER[i]];
-    const b = PRESETS[TIME_ORDER[(i + 1) % TIME_ORDER.length]];
-    // Hold the phase for the first half, then ease into the next one
-    const frac = this.clock - Math.floor(this.clock);
-    const f = this.smoothstep(Math.max(0, Math.min(1, (frac - 0.5) / 0.5)));
+    const { from, to, f } = phaseBlend(this.clock);
+    const a = PRESETS[TIME_ORDER[from]];
+    const b = PRESETS[TIME_ORDER[to]];
 
     this.sunDir.copy(a.sunDirection).normalize();
     this.blendToward(a, 1); // copy phase A exactly…
@@ -307,7 +319,7 @@ export class DayNightCycle {
       }
       sky.uGround.value.lerp(this._tmpColor.copy(SNOW_GROUND).multiplyScalar(0.6), 0.85 * s);
       // Snow catches the moonlight: snowy nights are noticeably brighter
-      this.ambient.intensity += 0.45 * s * this._darkness;
+      this.ambient.intensity += 0.3 * s * this._darkness;
       this.ambient.groundColor.lerp(this.ambient.color, 0.5 * s);
     }
   }
@@ -352,9 +364,5 @@ export class DayNightCycle {
       g.uContrast.value += (p.contrast - g.uContrast.value) * t;
       this.post.bloom.strength += (p.bloomStrength - this.post.bloom.strength) * t;
     }
-  }
-
-  private smoothstep(t: number): number {
-    return t * t * (3 - 2 * t);
   }
 }

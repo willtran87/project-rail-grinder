@@ -19,7 +19,7 @@ import type { Region } from '../types/rail';
 export type { Region };
 export type Precipitation = 'rain' | 'snow';
 
-interface Climate {
+export interface Climate {
   precip: Precipitation;
   /** Chance (0..1) that the next weather state is showers */
   showerChance: number;
@@ -51,6 +51,27 @@ const TOP = 28;           // how high drops start (m)
 const EASE_TIME = 18;     // seconds for the weather to roll in / clear
 const STATE_MIN = 50;     // seconds a weather state lasts (min … max)
 const STATE_MAX = 120;
+
+/**
+ * The director's choice of what comes next: showers, cloudy, or clear,
+ * with the odds and maximum strength set by the climate.
+ * @param random - a source of numbers in [0, 1) (Math.random in the game; fixed in tests)
+ */
+export function nextWeatherState(
+  c: Climate, random: () => number,
+): { intensity: number; overcast: number; duration: number } {
+  const r = random();
+  let intensity = 0, overcast: number;
+  if (r < c.showerChance) {
+    intensity = c.maxIntensity * (0.5 + random() * 0.5);
+    overcast = 0.75 + random() * 0.25;
+  } else if (r < c.showerChance + (1 - c.showerChance) * c.cloudyChance) {
+    overcast = 0.4 + random() * 0.3;
+  } else {
+    overcast = random() * 0.2;
+  }
+  return { intensity, overcast, duration: STATE_MIN + random() * (STATE_MAX - STATE_MIN) };
+}
 
 /** Soft round dot for snowflakes, drawn once */
 function makeFlakeTexture(): THREE.CanvasTexture {
@@ -90,6 +111,13 @@ export class Weather {
   overcast = 0;
   /** Let the director change the weather on its own */
   auto = true;
+
+  // Shelter: rain/snow stops at the train roofs (see setShelter)
+  private shelterPts = new Float32Array(0);
+  private shelterCount = 0;
+  private shelterR2 = 0;
+  private shelterTop = 0;
+  private shelterBox = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
 
   constructor() {
     // Rain: each drop is a short line, so fast drops read as streaks
@@ -153,21 +181,45 @@ export class Weather {
     this.stateTimer = 90; // hold the player's choice for a while
   }
 
+  /**
+   * Tell the weather where it can't fall: a chain of points (x, z pairs)
+   * along the middle of the train. Anything within `radius` of a point and
+   * below `top` (the roof height) has hit the train and is removed.
+   */
+  setShelter(points: Float32Array, count: number, radius: number, top: number): void {
+    this.shelterPts = points;
+    this.shelterCount = count;
+    this.shelterR2 = radius * radius;
+    this.shelterTop = top;
+    const b = this.shelterBox;
+    b.minX = b.minZ = Infinity; b.maxX = b.maxZ = -Infinity;
+    for (let i = 0; i < count; i++) {
+      const x = points[i * 2], z = points[i * 2 + 1];
+      if (x < b.minX) b.minX = x; if (x > b.maxX) b.maxX = x;
+      if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
+    }
+    b.minX -= radius; b.maxX += radius; b.minZ -= radius; b.maxZ += radius;
+  }
+
+  /** Has a drop/flake at (x, y, z) landed on the train? */
+  private sheltered(x: number, y: number, z: number): boolean {
+    if (y > this.shelterTop || this.shelterCount === 0) return false;
+    const b = this.shelterBox;
+    if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) return false; // quick reject
+    const p = this.shelterPts;
+    for (let i = 0; i < this.shelterCount; i++) {
+      const dx = x - p[i * 2], dz = z - p[i * 2 + 1];
+      if (dx * dx + dz * dz < this.shelterR2) return true;
+    }
+    return false;
+  }
+
   /** Pick the next weather state for this climate */
   private chooseNextState(): void {
-    const c = this.climate;
-    const r = Math.random();
-    if (r < c.showerChance) {
-      this.targetIntensity = c.maxIntensity * (0.5 + Math.random() * 0.5);
-      this.targetOvercast = 0.75 + Math.random() * 0.25;
-    } else if (r < c.showerChance + (1 - c.showerChance) * c.cloudyChance) {
-      this.targetIntensity = 0;
-      this.targetOvercast = 0.4 + Math.random() * 0.3;
-    } else {
-      this.targetIntensity = 0;
-      this.targetOvercast = Math.random() * 0.2;
-    }
-    this.stateTimer = STATE_MIN + Math.random() * (STATE_MAX - STATE_MIN);
+    const next = nextWeatherState(this.climate, Math.random);
+    this.targetIntensity = next.intensity;
+    this.targetOvercast = next.overcast;
+    this.stateTimer = next.duration;
   }
 
   /** Put a raindrop back at the top, somewhere around (cx, cz) */
@@ -215,7 +267,10 @@ export class Weather {
       p[i * 6 + 1] -= fall; p[i * 6 + 4] -= fall;
       p[i * 6] += windX; p[i * 6 + 3] += windX;
       p[i * 6 + 2] += windZ; p[i * 6 + 5] += windZ;
-      if (p[i * 6 + 4] < -1) this.respawnDrop(i, c.x, c.z);
+      // Hit the ground, or a train roof: start again at the top
+      if (p[i * 6 + 4] < -1 || this.sheltered(p[i * 6 + 3], p[i * 6 + 4], p[i * 6 + 5])) {
+        this.respawnDrop(i, c.x, c.z);
+      }
     }
     (this.rain.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
@@ -230,7 +285,8 @@ export class Weather {
       p[i * 3] += (Math.sin(t * 0.9 + s) * 0.6 + 0.8) * dt;     // sway + gentle wind
       p[i * 3 + 2] += Math.cos(t * 0.7 + s * 1.3) * 0.5 * dt;
       // Keep flakes in a box around the grinder: wrap round instead of respawning
-      if (p[i * 3 + 1] < -0.5) p[i * 3 + 1] += TOP;
+      // Landed (on the ground or a train roof): wrap back up to the top
+      if (p[i * 3 + 1] < -0.5 || this.sheltered(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])) p[i * 3 + 1] += TOP;
       if (p[i * 3] - c.x > half) p[i * 3] -= AREA; else if (c.x - p[i * 3] > half) p[i * 3] += AREA;
       if (p[i * 3 + 2] - c.z > half) p[i * 3 + 2] -= AREA; else if (c.z - p[i * 3 + 2] > half) p[i * 3 + 2] += AREA;
     }

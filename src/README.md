@@ -40,8 +40,7 @@ src/
 │   ├── ConsistLights.ts     # Headlight spot + visible beam, fades in with darkness
 │   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
 │   ├── Weather.ts           # Rain streaks / snow + per-route climate "director"
-│   ├── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
-│   └── Train.ts             # Standalone freight-train model (currently unused)
+│   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
 │   ├── GrindEffects.ts      # Sparks + dust + work lights + contact glow, per frame
 │   ├── DustSystem.ts        # Billowing grinding-dust puffs (custom point shader)
@@ -172,6 +171,9 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 - **Landmarks**: static parts are merged into one mesh per material ("baked"), so a whole route of landmarks costs only a handful of draw calls. `blocks(x, z)` is passed to `Environment` so trees stay off roads and landmarks.
 - **Level crossings**: `Game.crossingOccupancy()` reports the stretches of track the grinder and any passing freight are on, plus ~6 s of travel ahead. A crossing closes when its spot is inside one of them. Cars stop at the stop line (x = +12 / −8). Only a car already between the lines when the lights start may carry on and clear the tracks.
 - **Clearances**: nothing may stand within ~2.2 m of the main track centre, or 3.3–6.7 m on the right where the adjacent track's freight passes. Lineside poles, mileposts and signals are placed by distance along the track (`Environment.placeLineside`) so they stay clear on curves too.
+- **Freight work-zone speed** (`freightAllowedSpeed` in `PassingTrain.ts`): the freight brakes to 11 m/s (~25 mph) before the zone around the grinder, then speeds back up once past it.
+- **Rain/snow shelter** (`Weather.setShelter`): `Game` passes a chain of points along the consist each frame; drops that land within 1.7 m of one and below roof height are removed.
+- **Tests for the world logic**: `world/Landmarks.test.ts` covers the crossing car. `world/livingWorld.test.ts` covers time-of-day blending, the weather director, freight speed and slow-order braking. These are pure functions, so they need no browser.
 - **Hot rail** (`RailSegment.heatUp`): `Game.handleGrinding` heats the segments under each grinding car; they cool in `update()` over ~3.5 s.
 
 ### Career Mode

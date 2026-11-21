@@ -40,7 +40,7 @@ import type { TargetProfile, Region } from './types/rail';
 import {
   COMPLETION_ACCURACY, GRIND_SPEED, COOL_RATE,
   stoneGrindX, stoneContactWidth, heatRatePerSec, heatPenalty, removalRatePerSec,
-  sectionStars, jobStars, sectionProgress,
+  sectionStars, jobStars, sectionProgress, approachSpeedLimit,
 } from './game/rules';
 import { sectionAccuracy, sectionMeanAccuracy, sectionWorstDeviation } from './game/sectionMetrics';
 import { recordResult } from './game/progress';
@@ -246,6 +246,26 @@ export class Game {
     return occ;
   }
 
+  /**
+   * Rain and snow stop at the train roofs instead of falling through the cars
+   * (and into the cab view): give the weather a chain of points along the
+   * middle of the consist, every 1.5 m from its tail (−50 m) to its nose (+76 m).
+   */
+  private updateWeatherShelter(): void {
+    const pts = this._shelterPts;
+    const n = pts.length / 2;
+    const len = this.trackLength;
+    for (let i = 0; i < n; i++) {
+      const d = Math.max(0.1, Math.min(len - 0.1, this.grinderPosition - 50 + i * 1.5));
+      const p = this.track.getTrackPoint(d).position;
+      pts[i * 2] = p.x;
+      pts[i * 2 + 1] = p.z;
+    }
+    // radius 1.7 m at 1.5 m spacing covers the 3.1 m-wide cars; roofs are ~4.4 m up
+    this.weather.setShelter(pts, n, 1.7, 4.4);
+  }
+  private _shelterPts = new Float32Array(Math.ceil(126 / 1.5 + 1) * 2);
+
   /** Sky, sun, fog, colour grade and ground mist — all follow time of day and the grinder */
   private updateAtmosphere(dt: number): void {
     const focus = this.grinderFocus();
@@ -253,6 +273,7 @@ export class Game {
     this.dayNight.overcast = this.weather.overcast;
     this.dayNight.update(dt, this.engine.camera, focus);
     const dark = this.dayNight.darkness;
+    this.updateWeatherShelter();
     this.consistLights.update(this.track, this.grinderPosition, dark, this.weather.haze);
     this.crossingBell = this.landmarks?.update(dt, this.crossingOccupancy(), this.grinderPosition, dark) ?? 0;
     this.groundMist.update(dt, focus, this.dayNight.fogColor, this.dayNight.currentName);
@@ -718,7 +739,7 @@ export class Game {
     const dir = this.grinderSpeed < 0 ? -1 : 1;
     const lookAhead = (30 * 30) / (2 * brake);
     for (let ahead = 1; ahead <= lookAhead; ahead += 1) {
-      if (slowAt(pos + dir * ahead)) return Math.sqrt(limit * limit + 2 * brake * ahead);
+      if (slowAt(pos + dir * ahead)) return approachSpeedLimit(limit, brake, ahead);
     }
     return Infinity;
   }
@@ -729,7 +750,8 @@ export class Game {
     // already down to the limit when it gets there.
     const SLOW_ORDER_SPEED = 2.0;
     const SLOW_ORDER_BRAKE = 10; // m/s²
-    const slowOrderLimit = this.slowOrderSpeedLimit(SLOW_ORDER_SPEED, SLOW_ORDER_BRAKE);
+    // (plan the approach with 20% braking in reserve, so it never arrives too fast)
+    const slowOrderLimit = this.slowOrderSpeedLimit(SLOW_ORDER_SPEED, SLOW_ORDER_BRAKE * 0.8);
 
     // While grinding, auto-speed is handled in handleGrinding
     // While not grinding, player drives normally

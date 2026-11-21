@@ -55,13 +55,63 @@ export interface Occupancy { from: number; to: number }
 
 // Crossing-local x: the main track is at 0, the adjacent track at +5.
 // A car must not be anywhere between these while a train is near.
-const STOP_LINE_RIGHT = 12;   // car coming from +x waits here
-const STOP_LINE_LEFT = -8;    // car coming from −x waits here
+export const STOP_LINE_RIGHT = 12;   // car coming from +x waits here
+export const STOP_LINE_LEFT = -8;    // car coming from −x waits here
 const CAR_SPEED = 9;          // m/s (~20 mph)
 const BRAKE = 5;              // m/s² — firm but ordinary braking
 
 /** Circle of ground kept clear of trees */
 interface Blocker { x: number; z: number; r: number }
+
+/** The parts of a crossing that the car logic needs (a Crossing has all of them) */
+export interface CrossingCar {
+  carX: number;
+  carDir: -1 | 1;
+  carSpeed: number;
+  carWait: number;
+  near: number;
+  far: number;
+}
+
+/**
+ * Move a level-crossing car on by one frame. It drives back and forth along
+ * the road, pausing at each end and turning round, and stops at the stop
+ * line whenever the crossing is closed. A car already between the stop lines
+ * when the lights start keeps going: the lights give several seconds of
+ * warning, and it clears the tracks in about two.
+ *
+ * Pure logic (no Three.js) so it can be unit-tested.
+ * @param closed - lights flashing / gates not fully up
+ * @param random - source of [0, 1) numbers for the pause length
+ */
+export function stepCrossingCar(c: CrossingCar, dt: number, closed: boolean, random: () => number = Math.random): void {
+  // Parked at a road end, about to turn round
+  if (c.carWait > 0) {
+    c.carWait -= dt;
+    if (c.carWait <= 0) c.carDir = c.carDir < 0 ? 1 : -1;
+  } else {
+    const stopX = c.carDir < 0 ? STOP_LINE_RIGHT : STOP_LINE_LEFT;
+    const toStop = (c.carX - stopX) * -c.carDir; // metres until the stop line (negative = past it)
+    // Between the two stop lines = on or right next to the tracks. A car
+    // already in there keeps going to clear them; any other car must wait.
+    const inZone = c.carX > STOP_LINE_LEFT && c.carX < STOP_LINE_RIGHT;
+    const mustStop = closed && !inZone;
+    // Speed that still lets it stop exactly at the line (braking at BRAKE m/s²)
+    const wanted = mustStop ? Math.min(CAR_SPEED, Math.sqrt(2 * BRAKE * Math.max(0, toStop))) : CAR_SPEED;
+    c.carSpeed = wanted < c.carSpeed ? wanted : Math.min(wanted, c.carSpeed + 3 * dt);
+    const step = c.carSpeed * dt;
+    // Never roll over the line while the crossing is closed
+    c.carX += c.carDir * (mustStop ? Math.min(step, Math.max(0, toStop)) : step);
+
+    // Reached the end of the road: stop, then turn round
+    const end = c.carDir < 0 ? -c.near + 2.5 : c.far - 2.5;
+    if ((c.carDir < 0 && c.carX <= end) || (c.carDir > 0 && c.carX >= end)) {
+      c.carX = end;
+      c.carSpeed = 0;
+      c.carWait = 4 + random() * 4;
+    }
+  }
+}
 
 export class Landmarks {
   readonly group = new THREE.Group();
@@ -698,40 +748,9 @@ export class Landmarks {
     return Math.max(0.2, 1 - Math.abs(grinderPosition + 10 - c.dist) / 120);
   }
 
-  /**
-   * Drive the crossing's car. It goes back and forth along the road, pausing
-   * at each end and turning round, and stops at the stop line whenever the
-   * crossing is closed. A car already past the stop line when the lights
-   * start keeps going: the lights give several seconds of warning, and it
-   * clears the tracks in about two.
-   */
+  /** Drive the crossing's car (see stepCrossingCar), then place its mesh */
   private updateCar(c: Crossing, dt: number, closed: boolean): void {
-    // Parked at a road end, about to turn round
-    if (c.carWait > 0) {
-      c.carWait -= dt;
-      if (c.carWait <= 0) c.carDir = c.carDir < 0 ? 1 : -1;
-    } else {
-      const stopX = c.carDir < 0 ? STOP_LINE_RIGHT : STOP_LINE_LEFT;
-      const toStop = (c.carX - stopX) * -c.carDir; // metres until the stop line (negative = past it)
-      // Between the two stop lines = on or right next to the tracks. A car
-      // already in there keeps going to clear them; any other car must wait.
-      const inZone = c.carX > STOP_LINE_LEFT && c.carX < STOP_LINE_RIGHT;
-      const mustStop = closed && !inZone;
-      // Speed that still lets it stop exactly at the line (braking at BRAKE m/s²)
-      const wanted = mustStop ? Math.min(CAR_SPEED, Math.sqrt(2 * BRAKE * Math.max(0, toStop))) : CAR_SPEED;
-      c.carSpeed = wanted < c.carSpeed ? wanted : Math.min(wanted, c.carSpeed + 3 * dt);
-      const step = c.carSpeed * dt;
-      // Never roll over the line while the crossing is closed
-      c.carX += c.carDir * (mustStop ? Math.min(step, Math.max(0, toStop)) : step);
-
-      // Reached the end of the road: stop, then turn round
-      const end = c.carDir < 0 ? -c.near + 2.5 : c.far - 2.5;
-      if ((c.carDir < 0 && c.carX <= end) || (c.carDir > 0 && c.carX >= end)) {
-        c.carX = end;
-        c.carSpeed = 0;
-        c.carWait = 4 + Math.random() * 4;
-      }
-    }
+    stepCrossingCar(c, dt, closed);
 
     // Keep right: the lane (and the way the car faces) follows its direction,
     // easing across while it turns round at the road end
