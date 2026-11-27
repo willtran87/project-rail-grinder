@@ -11,7 +11,8 @@
 
 import * as THREE from 'three';
 import { RailProfile } from './RailProfile';
-import { RailSegment } from './RailSegment';
+import { RailSegment, getGrindMarkTexture } from './RailSegment';
+import { RailBatch } from './RailBatch';
 import { createBallastGeometry, createBallastMaterial } from '../world/trackBed';
 import { disposeObject3D } from '../core/dispose';
 
@@ -38,10 +39,24 @@ export class RailTrack {
   readonly leftProfiles: RailProfile[] = [];
   readonly rightProfiles: RailProfile[] = [];
 
-  // Pre-allocated temp objects for getTrackPoint (avoids per-call garbage)
+  /** All rail segments in one mesh (see RailBatch) */
+  private batch!: RailBatch;
+  /** Segments that are cooling down or flashing (the only ones updated per frame) */
+  private activeSegments = new Set<RailSegment>();
+
+  // getTrackPoint lookup table: the spline sampled every LUT_STEP metres,
+  // built once. (Asking the spline directly means an arc-length search plus
+  // several new vectors per call — and the game makes ~130 calls a frame.)
+  private static readonly LUT_STEP = 0.25;
+  private lutPos!: Float32Array;   // x, y, z per sample
+  private lutFwd!: Float32Array;   // unit tangent per sample
+  private lutCount = 0;
+  // Results come from a small rotating pool, so a couple of calls in a row
+  // (e.g. front and rear bogie) don't overwrite each other
+  private static readonly POOL = 16;
+  private tpPool: TrackPoint[] = [];
+  private tpNext = 0;
   private _tpWorldUp = new THREE.Vector3(0, 1, 0);
-  private _tpRight = new THREE.Vector3();
-  private _tpBaseUp = new THREE.Vector3();
   private _tpBankQuat = new THREE.Quaternion();
 
   /** The spline path the track follows */
@@ -72,6 +87,7 @@ export class RailTrack {
 
     // Default banking: compute from curvature
     this.bankAngles = bankAngles ?? this.computeBankAngles(controlPoints.length);
+    this.buildLookup();
 
     // Build all track elements along the curve
     this.buildRails();
@@ -79,26 +95,68 @@ export class RailTrack {
     this.buildBallast();
   }
 
-  /** Get a point along the track at a given distance from the start.
-   *  NOTE: The returned vectors are shared/reused — copy them if you need to store them. */
+  /** Sample the spline once (see getTrackPoint) */
+  private buildLookup(): void {
+    const n = Math.ceil(this.totalLength / RailTrack.LUT_STEP) + 1;
+    this.lutCount = n;
+    this.lutPos = new Float32Array(n * 3);
+    this.lutFwd = new Float32Array(n * 3);
+    const p = new THREE.Vector3(), f = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      const t = Math.min(1, (i * RailTrack.LUT_STEP) / this.totalLength);
+      this.path.getPointAt(t, p);
+      this.path.getTangentAt(t, f).normalize();
+      this.lutPos[i * 3] = p.x; this.lutPos[i * 3 + 1] = p.y; this.lutPos[i * 3 + 2] = p.z;
+      this.lutFwd[i * 3] = f.x; this.lutFwd[i * 3 + 1] = f.y; this.lutFwd[i * 3 + 2] = f.z;
+    }
+    for (let i = 0; i < RailTrack.POOL; i++) {
+      this.tpPool.push({
+        position: new THREE.Vector3(), forward: new THREE.Vector3(),
+        up: new THREE.Vector3(), right: new THREE.Vector3(), bank: 0, t: 0,
+      });
+    }
+  }
+
+  /**
+   * Get a point along the track at a given distance from the start.
+   * Interpolated from a table sampled every 25 cm (error well under a millimetre).
+   * NOTE: the returned object is reused after 16 more calls — copy anything
+   * you need to keep.
+   */
   getTrackPoint(distance: number): TrackPoint {
-    const t = Math.max(0, Math.min(1, distance / this.totalLength));
+    const d = Math.max(0, Math.min(this.totalLength, distance));
+    const t = d / this.totalLength;
+    const f = Math.min(this.lutCount - 1.000001, d / RailTrack.LUT_STEP);
+    const i = Math.floor(f), k = f - i;
+    const a = i * 3, b = a + 3;
+    const P = this.lutPos, F = this.lutFwd;
 
-    const position = this.path.getPointAt(t);
-    const forward = this.path.getTangentAt(t).normalize();
+    const tp = this.tpPool[this.tpNext];
+    this.tpNext = (this.tpNext + 1) % RailTrack.POOL;
+    tp.position.set(P[a] + (P[b] - P[a]) * k, P[a + 1] + (P[b + 1] - P[a + 1]) * k, P[a + 2] + (P[b + 2] - P[a + 2]) * k);
+    const forward = tp.forward.set(F[a] + (F[b] - F[a]) * k, F[a + 1] + (F[b + 1] - F[a + 1]) * k, F[a + 2] + (F[b + 2] - F[a + 2]) * k).normalize();
 
-    // Reuse pre-allocated temps (avoids 6 object allocations per call)
-    const right = this._tpRight.crossVectors(this._tpWorldUp, forward).normalize();
-    const baseUp = this._tpBaseUp.crossVectors(forward, right).normalize();
-
-    const bank = this.getBankAtT(t);
+    const right = tp.right.crossVectors(this._tpWorldUp, forward).normalize();
+    const up = tp.up.crossVectors(forward, right).normalize();
 
     // Apply banking
+    const bank = this.getBankAtT(t);
     this._tpBankQuat.setFromAxisAngle(forward, bank);
-    const bankedUp = baseUp.applyQuaternion(this._tpBankQuat);
-    const bankedRight = right.applyQuaternion(this._tpBankQuat);
+    up.applyQuaternion(this._tpBankQuat);
+    right.applyQuaternion(this._tpBankQuat);
+    tp.bank = bank;
+    tp.t = t;
+    return tp;
+  }
 
-    return { position, forward, up: bankedUp, right: bankedRight, bank, t };
+  /**
+   * Update the rail segments that are animating (hot rail cooling down,
+   * completion flash). Idle segments are skipped entirely.
+   */
+  updateSegments(dt: number): void {
+    for (const seg of this.activeSegments) {
+      if (!seg.update(dt)) this.activeSegments.delete(seg);
+    }
   }
 
   /** Get the visual segment index for a distance along the track */
@@ -181,42 +239,39 @@ export class RailTrack {
     return a + (b - a) * frac;
   }
 
-  /** Build rail segment meshes along the curve */
+  /**
+   * Build the rails: one RailSegment per 5 m per rail, all drawn together by
+   * a single RailBatch. Slots 0..n-1 are the left rail, n..2n-1 the right.
+   */
   private buildRails(): void {
-    for (let i = 0; i < this.segmentCount; i++) {
-      const dist = i * VISUAL_SEGMENT_LENGTH;
-      const tp = this.getTrackPoint(dist);
-
-      for (const side of ['left', 'right'] as const) {
-        const profile = new RailProfile();
-        const segment = new RailSegment(profile, 0);
-
-        // Position: offset laterally from track center
-        const lateralDir = side === 'left' ? -1 : 1;
-        const offset = tp.right.clone().multiplyScalar(lateralDir * GAUGE_WIDTH / 2);
-        segment.mesh.position.copy(tp.position).add(offset);
-
-        // Rotation: align with the track direction and banking
-        const quat = new THREE.Quaternion();
-        const rotMatrix = new THREE.Matrix4().makeBasis(
-          tp.right,
-          tp.up,
-          tp.forward
-        );
-        quat.setFromRotationMatrix(rotMatrix);
-        segment.mesh.quaternion.copy(quat);
-
-        if (side === 'left') {
-          this.leftSegments.push(segment);
-          this.leftProfiles.push(profile);
-        } else {
-          this.rightSegments.push(segment);
-          this.rightProfiles.push(profile);
-        }
-
-        this.group.add(segment.mesh);
+    const transforms: THREE.Matrix4[] = [];
+    const basis = new THREE.Matrix4();
+    const quat = new THREE.Quaternion();
+    const one = new THREE.Vector3(1, 1, 1);
+    const pos = new THREE.Vector3();
+    for (const side of ['left', 'right'] as const) {
+      const lateralDir = side === 'left' ? -1 : 1;
+      for (let i = 0; i < this.segmentCount; i++) {
+        const tp = this.getTrackPoint(i * VISUAL_SEGMENT_LENGTH);
+        // Offset laterally from the track centre, aligned with direction and banking
+        pos.copy(tp.position).addScaledVector(tp.right, lateralDir * GAUGE_WIDTH / 2);
+        quat.setFromRotationMatrix(basis.makeBasis(tp.right, tp.up, tp.forward));
+        transforms.push(new THREE.Matrix4().compose(pos, quat, one));
       }
     }
+
+    const pointCount = new RailProfile().points.length;
+    this.batch = new RailBatch(transforms, VISUAL_SEGMENT_LENGTH, pointCount, getGrindMarkTexture());
+    const activate = (seg: RailSegment) => this.activeSegments.add(seg);
+    for (let i = 0; i < this.segmentCount; i++) {
+      const lp = new RailProfile(), rp = new RailProfile();
+      this.leftProfiles.push(lp);
+      this.rightProfiles.push(rp);
+      this.leftSegments.push(new RailSegment(lp, this.batch, i, activate));
+      this.rightSegments.push(new RailSegment(rp, this.batch, this.segmentCount + i, activate));
+    }
+    this.batch.finishBuild();
+    this.group.add(this.batch.railMesh, this.batch.shineMesh);
   }
 
   /**
@@ -284,9 +339,8 @@ export class RailTrack {
   }
 
   dispose(): void {
-    for (const seg of [...this.leftSegments, ...this.rightSegments]) {
-      seg.dispose();
-    }
+    this.batch.dispose();
+    this.activeSegments.clear();
     // Ties and ballast (instanced meshes this track owns)
     for (const m of this.bedMeshes) disposeObject3D(m);
   }

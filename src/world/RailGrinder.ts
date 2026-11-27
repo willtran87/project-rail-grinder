@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { createTrainBodyTexture, createRoughnessMap } from './ProceduralTextures';
+import { bakeStatic } from '../core/bakeStatic';
 
 const WG = 0.72;
 
@@ -49,6 +50,8 @@ export class RailGrinder {
       exit: new THREE.MeshStandardMaterial({ color: 0x00aa44, emissive: 0x00aa44, emissiveIntensity: 0.2 }),
       nb: new THREE.MeshStandardMaterial({ color: 0xffffcc, emissive: 0xaaaa55, emissiveIntensity: 0.3 }),
       redLt: new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0.5 }),
+      wheel: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.85, roughness: 0.3 }),
+      lens: new THREE.MeshStandardMaterial({ color: 0x44aa66, emissive: 0x22aa44, emissiveIntensity: 0.3 }),
     };
 
     this.buildCab(-42); this.buildWater(-26); this.buildGrind(-12); this.buildGrind(0);
@@ -87,7 +90,7 @@ export class RailGrinder {
   // ---- Reusable assemblies ----
   private trucks(g: THREE.Group, len: number) {
     const wG = new THREE.CylinderGeometry(0.45, 0.45, 0.15, 20);
-    const wM = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.85, roughness: 0.3 });
+    const wM = this.m.wheel; // shared, so all wheels merge into one draw call
     for (const tz of [-len * 0.35, len * 0.35]) {
       // Sideframes
       this.B(g, 2.5, 0.12, 1.6, this.m.frame, 0, 0.28, tz);
@@ -196,7 +199,16 @@ export class RailGrinder {
     }
   }
 
-  private reg(g: THREE.Group, off: number, hl: number) { this.cars.push({ group: g, offset: off, halfLength: hl }); this.group.add(g); }
+  /**
+   * Register a finished car. Its hundreds of fixed parts are merged into a few
+   * meshes (one per material) — the drop-down grind modules stay separate
+   * because they move. Without this the consist alone was ~4,000 draw calls.
+   */
+  private reg(g: THREE.Group, off: number, hl: number) {
+    bakeStatic(g, { keep: new Set<THREE.Object3D>(this.grindModules) });
+    this.cars.push({ group: g, offset: off, halfLength: hl });
+    this.group.add(g);
+  }
 
   // ---- EXHAUST ----
   private exhaust(g: THREE.Group, x: number, y: number, z: number, h: number) {
@@ -472,8 +484,7 @@ export class RailGrinder {
       // Main housing (tech-looking dark box with lens)
       this.B(g, 0.2, 0.12, 0.3, this.m.frame, s * 0.5, 0.65, -hl + 1.5);
       // Lens/emitter window (green tint)
-      const lensMat = new THREE.MeshStandardMaterial({ color: 0x44aa66, emissive: 0x22aa44, emissiveIntensity: 0.3 });
-      this.B(g, 0.08, 0.04, 0.02, lensMat, s * 0.5, 0.59, -hl + 1.35);
+      this.B(g, 0.08, 0.04, 0.02, this.m.lens, s * 0.5, 0.59, -hl + 1.35);
       // Camera housing next to laser
       this.B(g, 0.1, 0.08, 0.12, this.m.fmid, s * 0.5, 0.65, -hl + 2.0);
     }
@@ -667,8 +678,8 @@ export class RailGrinder {
     // Antennas
     this.C(g, 0.01, 0.01, 0.8, 4, this.m.frame, 0, 4.8, -1);
     this.C(g, 0.01, 0.01, 0.6, 4, this.m.frame, 0.4, 4.6, 1);
-    // Interior lights (multiple)
-    const il = new THREE.PointLight(0xffeecc, 0.5, 8); il.position.set(0, 2.5, 0); g.add(il);
+    // (No interior PointLight: a real light here cost every lit pixel in the
+    // scene a little, for a glow nobody could see through the windows.)
     // End platforms with detailed railings
     for (const e of [-1, 1]) {
       this.B(g, 2.8, 0.03, 0.7, this.m.fmid, 0, 0.82, e * 7.8);

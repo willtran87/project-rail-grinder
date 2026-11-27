@@ -8,7 +8,7 @@
  * This tells the player WHERE on the track they are, WHERE defects are,
  * and WHAT still needs work — the "inspection report" before grinding.
  */
-import { getPalette } from './palette';
+import { getPalette, isColorblindMode } from './palette';
 
 export interface SegmentStatus {
   defectSeverity: number;
@@ -44,8 +44,13 @@ export class TrackMap {
     this.ctx = this.canvas.getContext('2d')!;
   }
 
+  // Redraw-on-change (see draw)
+  private dirty = true;
+  private lastKey = '';
+
   /** Initialize with segment count */
   init(segmentCount: number): void {
+    this.dirty = true;
     this.segments = [];
     for (let i = 0; i < segmentCount; i++) {
       this.segments.push({
@@ -61,6 +66,7 @@ export class TrackMap {
   updateSegment(index: number, status: Partial<SegmentStatus>): void {
     if (index < 0 || index >= this.segments.length) return;
     Object.assign(this.segments[index], status);
+    this.dirty = true;
   }
 
   /** Update grinder position (0-1 along track) */
@@ -76,12 +82,25 @@ export class TrackMap {
   private revenueTrainT: number = -1;
   setRevenueTrainPosition(t: number): void { this.revenueTrainT = t; }
 
-  /** Redraw the map */
+  /**
+   * Redraw the map — only when something visible changed: a section's state,
+   * the grinder marker moving a pixel, the NEXT arrow blinking, or (while the
+   * revenue train is shown) its pulse at 30 fps. Called every frame by Game.
+   */
   draw(): void {
     const { width, height } = this.canvas;
     const ctx = this.ctx;
     const count = this.segments.length;
     if (count === 0) return;
+
+    const now = Date.now();
+    const trainShown = this.revenueTrainT >= 0 && this.revenueTrainT <= 1;
+    const key = `${Math.round(this.grinderT * (width - 40) * 2)}|${this.nextTarget}|`
+      + `${Math.sin(now * 0.006) > 0}|${trainShown ? Math.round(this.revenueTrainT * 1000) + ':' + Math.floor(now / 33) : -1}|`
+      + `${isColorblindMode()}`;
+    if (!this.dirty && key === this.lastKey) return;
+    this.dirty = false;
+    this.lastKey = key;
 
     ctx.clearRect(0, 0, width, height);
 

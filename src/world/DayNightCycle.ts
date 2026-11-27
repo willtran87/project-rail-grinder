@@ -103,6 +103,8 @@ const PRESETS: Record<string, TimePreset> = {
 
 const TIME_ORDER = ['dawn', 'day', 'dusk', 'night'];
 const SUN_DISTANCE = 80; // how far the shadow-casting light sits from the focus point
+/** The shadow box is centred this far in front of the camera (metres) */
+const SHADOW_AHEAD = 25;
 
 /**
  * Time passes on its own: each phase (dawn, day, dusk, night) lasts this many
@@ -148,6 +150,11 @@ export class DayNightCycle {
   /** Where the clock is heading when N fast-forwards it */
   private clockTarget: number = 1;
   private sunDir = new THREE.Vector3();
+  private _shadowCentre = new THREE.Vector3();
+  private _camFwd = new THREE.Vector3();
+  private _lx = new THREE.Vector3();
+  private _ly = new THREE.Vector3();
+  private static readonly WORLD_UP = new THREE.Vector3(0, 1, 0);
   private _tmpDir = new THREE.Vector3();
   private _tmpColor = new THREE.Color();
   private _darkness = 0;
@@ -236,6 +243,35 @@ export class DayNightCycle {
   }
 
   /**
+   * Where the shadow box goes: just ahead of the camera, where shadows are
+   * actually seen (not behind it). Snapped to whole shadow-map texels in the
+   * light's view, so shadow edges stay still instead of shimmering as the
+   * camera moves.
+   */
+  private shadowCentre(camera: THREE.Camera, focus: THREE.Vector3): THREE.Vector3 {
+    const fwd = camera.getWorldDirection(this._camFwd);
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, 1);
+    fwd.normalize();
+    const c = this._shadowCentre.copy(camera.position).addScaledVector(fwd, SHADOW_AHEAD);
+    c.y = focus.y;
+
+    // The shadow camera looks along -sunDir with world-up as "up":
+    // its x axis = up × sunDir, its y axis = sunDir × x
+    const L = this.sunDir;
+    const lx = this._lx.crossVectors(DayNightCycle.WORLD_UP, L);
+    if (lx.lengthSq() < 1e-6) return c; // sun straight overhead: no snapping needed
+    lx.normalize();
+    const ly = this._ly.crossVectors(L, lx).normalize();
+    const shadowCam = this.sun.shadow.camera;
+    const texel = (shadowCam.right - shadowCam.left) / Math.max(1, this.sun.shadow.mapSize.x);
+    const a = Math.round(c.dot(lx) / texel) * texel;
+    const b = Math.round(c.dot(ly) / texel) * texel;
+    const z = c.dot(L);
+    return c.copy(lx).multiplyScalar(a).addScaledVector(ly, b).addScaledVector(L, z);
+  }
+
+  /**
    * @param camera - the sky dome is centred on it
    * @param focus - where the action is (the grinder); the sun's shadow box follows it
    *                so shadows stay sharp along the whole track, not just near the start
@@ -243,9 +279,10 @@ export class DayNightCycle {
   update(dt: number, camera: THREE.Camera, focus: THREE.Vector3): void {
     this.sky.update(dt, camera.position);
 
-    // Shadow-casting light sits at a fixed direction from the focus point
-    this.sun.position.copy(focus).addScaledVector(this.sunDir, SUN_DISTANCE);
-    this.sun.target.position.copy(focus);
+    // Shadow-casting light sits at a fixed direction from the shadow centre
+    const centre = this.shadowCentre(camera, focus);
+    this.sun.position.copy(centre).addScaledVector(this.sunDir, SUN_DISTANCE);
+    this.sun.target.position.copy(centre);
     this.sun.target.updateMatrixWorld();
 
     // Advance time: on its own, plus fast-forward toward clockTarget after N

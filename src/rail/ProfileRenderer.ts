@@ -7,7 +7,7 @@
 
 import { RailProfile } from './RailProfile';
 import type { TargetProfile } from '../types/rail';
-import { getPalette } from '../ui/palette';
+import { getPalette, isColorblindMode } from '../ui/palette';
 
 const PADDING = 30;
 const LABEL_COLOR = '#888';
@@ -30,6 +30,10 @@ export class ProfileRenderer {
   private damageCount: number = 0;
   private passCount: number = 0;
   private pulsePhase: number = 0;
+  // Redraw-on-change: what was drawn last time, and when
+  private lastKey = '';
+  private lastProfile: RailProfile | null = null;
+  private lastDrawTime = 0;
   private borderFlash: boolean = false;
 
   // Preview and before/after
@@ -82,7 +86,27 @@ export class ProfileRenderer {
     this.stoneGrinding = grinding ?? false;
   }
 
+  /**
+   * Redraw the display — but only when something on it has changed, or
+   * (for the pulsing markers and the fading "before" line) at 30 fps.
+   * Called every frame by Game; most calls return straight away.
+   */
   draw(current: RailProfile, target?: TargetProfile): void {
+    const now = performance.now();
+    const key = `${current.metalRemoved}|${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
+      + `${this.stoneVisible}|${this.stoneGrinding}|${this.damageCount}|${this.passCount}|`
+      + `${this.borderFlash}|${this.mirrored}|${isColorblindMode()}|${this.worstZones.length}`;
+    const animating = this.worstZones.length > 0 || (this.ghostProfile !== null && this.ghostAlpha > 0.01);
+    const changed = key !== this.lastKey || current !== this.lastProfile || this.previewProfile !== null;
+    if (!changed && (!animating || now - this.lastDrawTime < 33)) return;
+    const elapsed = Math.min(0.1, (now - this.lastDrawTime) / 1000);
+    this.lastKey = key;
+    this.lastProfile = current;
+    this.lastDrawTime = now;
+    this.drawNow(current, target, now, elapsed);
+  }
+
+  private drawNow(current: RailProfile, target: TargetProfile | undefined, now: number, elapsed: number): void {
     const { width, height } = this.canvas;
     const ctx = this.ctx;
 
@@ -148,7 +172,7 @@ export class ProfileRenderer {
       }
       ctx.stroke();
       ctx.setLineDash([]);
-      this.ghostAlpha -= 0.008;
+      this.ghostAlpha -= 0.48 * elapsed; // fades over ~1.2 s whatever the redraw rate
       if (this.ghostAlpha <= 0.01) this.ghostProfile = null;
     }
 
@@ -215,7 +239,7 @@ export class ProfileRenderer {
     }
 
     // Draw pulsing highlights on worst deviation zones
-    this.pulsePhase += 0.08;
+    this.pulsePhase = now * 0.0048; // time-based, so the pulse speed doesn't depend on redraws
     for (let zi = 0; zi < this.worstZones.length; zi++) {
       const zone = this.worstZones[zi];
       const zx = toCanvasX(zone.centerX);

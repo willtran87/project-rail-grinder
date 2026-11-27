@@ -146,6 +146,8 @@ export class Game {
   // Segment tracking
   private initialSectionAccuracy: number[] = []; // mean accuracy at job start, for progress bars
   private segmentCompleted: boolean[] = [];
+  /** How many entries of segmentCompleted are true (kept up to date, not recounted every frame) */
+  private completedCount = 0;
   private segmentPasses: number[] = [];
   private segmentDamage: number[] = [];
   private segmentSlowOrder: boolean[] = [];   // true = speed restricted
@@ -235,16 +237,23 @@ export class Game {
     const pos = this.grinderPosition;
     const v = this.grinderSpeed;
     // The consist runs from ~50 m behind grinderPosition to ~76 m ahead of it
-    const occ: Occupancy[] = [{
-      from: pos - 50 - 15 - Math.max(0, -v) * LEAD_SECONDS,
-      to: pos + 76 + 45 + Math.max(0, v) * LEAD_SECONDS,
-    }];
+    // (reuses the same objects every frame: no per-frame garbage)
+    const occ = this._occupancy;
+    occ.length = 1;
+    occ[0] = this._occGrinder;
+    this._occGrinder.from = pos - 50 - 15 - Math.max(0, -v) * LEAD_SECONDS;
+    this._occGrinder.to = pos + 76 + 45 + Math.max(0, v) * LEAD_SECONDS;
     const freight = this.passingTrain.span();
     if (freight) {
-      occ.push({ from: freight.rear - 10, to: freight.front + freight.speed * LEAD_SECONDS });
+      this._occFreight.from = freight.rear - 10;
+      this._occFreight.to = freight.front + freight.speed * LEAD_SECONDS;
+      occ.push(this._occFreight);
     }
     return occ;
   }
+  private _occupancy: Occupancy[] = [];
+  private _occGrinder: Occupancy = { from: 0, to: 0 };
+  private _occFreight: Occupancy = { from: 0, to: 0 };
 
   /**
    * Rain and snow stop at the train roofs instead of falling through the cars
@@ -558,11 +567,14 @@ export class Game {
 
   private update(dt: number): void {
     // Settings toggles work everywhere, including menus
-    this.perfOverlay.update();
+    this.perfOverlay.update(this.engine.renderer.info.render);
     if (this.input.wasKeyPressed('`')) this.perfOverlay.toggle();
     if (this.input.wasKeyPressed('g')) {
       this.quality = cycleQuality(this.quality);
       this.applyQuality();
+      // Shadows on/off changes every material's shader: recompile in the
+      // background (the picture holds for a moment) rather than freezing
+      this.engine.prewarm();
       this.floatingScore.show(`GRAPHICS: ${this.quality.toUpperCase()}`, '#ffffff');
     }
     if (this.input.wasKeyPressed('c')) {
@@ -623,7 +635,7 @@ export class Game {
       speed: this.grinderSpeed,
       angleChanged: this.input.isKeyDown('q') || this.input.isKeyDown('e') || this.input.isKeyDown('u') || this.input.isKeyDown('o'),
       pressureChanged: this.input.isKeyDown('a') || this.input.isKeyDown('d') || this.input.isKeyDown('j') || this.input.isKeyDown('l'),
-      sectionsCompleted: this.segmentCompleted.filter(c => c).length,
+      sectionsCompleted: this.completedCount,
     });
     // Auto-move during early tutorial
     if (tutResult.autoMove && !this.isGrinding && this.grinderSpeed < 1.5) {
@@ -639,13 +651,9 @@ export class Game {
     this.grinder.update(dt, this.dayNight.darkness);
     this.slowSigns?.update(dt);
 
-    // Update rail segment animations (flash fade, etc.)
-    for (let vi = 0; vi < this.track.segmentCount; vi++) {
-      if (vi < this.track.leftSegments.length) {
-        this.track.leftSegments[vi].update(dt);
-        this.track.rightSegments[vi].update(dt);
-      }
-    }
+    // Rail segment animations (hot rail cooling, completion flash) — only the
+    // few segments that are actually animating get updated
+    this.track.updateSegments(dt);
 
     // Profiles are redrawn inside handleGrinding while grinding; keep them live while driving too
     if (!this.isGrinding) {
@@ -698,7 +706,7 @@ export class Game {
     // Revenue train deadline (paused during the guided tutorial)
     if (!this.guidedTutorial.active) {
       const grinderT = (this.grinderPosition - secOffset) / (secEnd - secOffset);
-      this.deadline.update(dt, this.segmentCompleted.filter(c => c).length, grinderT);
+      this.deadline.update(dt, this.completedCount, grinderT);
     }
 
     // Weather
@@ -999,6 +1007,19 @@ export class Game {
     return rail === 'left' ? this.profileRenderer : this.profileRendererRight;
   }
 
+  /**
+   * Worst spots on a profile, remembered until the profile changes (finding
+   * them means comparing every point, and drawProfiles runs every frame).
+   */
+  private worstZonesFor(profile: RailProfile): Array<{ centerX: number; severity: number }> {
+    const cached = this._zoneCache.get(profile);
+    if (cached && cached.removed === profile.metalRemoved) return cached.zones;
+    const zones = profile.findWorstZones(this.targetProfile, 3);
+    this._zoneCache.set(profile, { removed: profile.metalRemoved, zones });
+    return zones;
+  }
+  private _zoneCache = new WeakMap<RailProfile, { removed: number; zones: Array<{ centerX: number; severity: number }> }>();
+
   /** Redraw both rail profile displays for the given visual segment */
   private drawProfiles(visualSegIndex: number, sectionIndex: number): void {
     const dmg = this.segmentDamage[sectionIndex] || 0;
@@ -1006,7 +1027,7 @@ export class Game {
     for (const rail of RAILS) {
       const profile = this.track.getProfile(visualSegIndex, rail);
       const renderer = this.rendererFor(rail);
-      renderer.setWorstZones(profile.findWorstZones(this.targetProfile, 3));
+      renderer.setWorstZones(this.worstZonesFor(profile));
       renderer.setSegmentInfo(dmg, passes);
       renderer.draw(profile, this.targetProfile);
     }
@@ -1016,6 +1037,7 @@ export class Game {
     const hadSlowOrder = this.segmentSlowOrder[sectionIndex];
     if (hadSlowOrder) this.slowSigns?.clear(sectionIndex); // board spins to green
     this.segmentCompleted[sectionIndex] = true;
+    this.completedCount++;
     this.segmentSlowOrder[sectionIndex] = false;
     this.consecutiveCompleted++;
 
@@ -1070,6 +1092,17 @@ export class Game {
     this.camera.shake(0.05);
   }
 
+  /**
+   * Set an element's text / style only if it changed. Writing the DOM every
+   * frame (even the same text) makes the browser redo style and layout work.
+   */
+  private setText(el: HTMLElement, text: string): void {
+    if (el.textContent !== text) el.textContent = text;
+  }
+  private setStyle(el: HTMLElement, prop: 'color' | 'height' | 'background' | 'fontWeight', value: string): void {
+    if (el.style[prop] !== value) el.style[prop] = value;
+  }
+
   private updateHUD(): void {
     const visIdx = this.track.getSegmentIndex(this.grinderPosition);
     const profL = this.track.getProfile(visIdx, 'left');
@@ -1077,49 +1110,45 @@ export class Game {
     const accL = profL.compare(this.targetProfile).withinTolerance;
     const accR = profR.compare(this.targetProfile).withinTolerance;
     const accuracy = (Math.min(accL, accR) * 100).toFixed(0);
-    const completedSegs = this.segmentCompleted.filter(c => c).length;
+    const completedSegs = this.completedCount;
 
     // Compact progress display (cached elements)
-    this.segmentsEl.textContent = `${completedSegs}/${this.sectionCount}`;
-    this.accuracyEl.textContent = `${accuracy}%`;
-    this.accuracyEl.style.color = Number(accuracy) > 80 ? 'var(--ui-green)' :
-      Number(accuracy) > 50 ? 'var(--ui-accent)' : 'var(--ui-red)';
+    this.setText(this.segmentsEl, `${completedSegs}/${this.sectionCount}`);
+    this.setText(this.accuracyEl, `${accuracy}%`);
+    this.setStyle(this.accuracyEl, 'color', Number(accuracy) > 80 ? 'var(--ui-green)' :
+      Number(accuracy) > 50 ? 'var(--ui-accent)' : 'var(--ui-red)');
   }
 
   private updateStonePanel(): void {
     // Always show both rails
-    this.angleValue.textContent = `${this.stoneAngle.left.toFixed(0)}°`;
-    this.pressureValue.textContent = `${this.stonePressure.left.toFixed(0)}%`;
-    this.angleValueR.textContent = `${this.stoneAngle.right.toFixed(0)}°`;
-    this.pressureValueR.textContent = `${this.stonePressure.right.toFixed(0)}%`;
+    this.setText(this.angleValue, `${this.stoneAngle.left.toFixed(0)}°`);
+    this.setText(this.pressureValue, `${this.stonePressure.left.toFixed(0)}%`);
+    this.setText(this.angleValueR, `${this.stoneAngle.right.toFixed(0)}°`);
+    this.setText(this.pressureValueR, `${this.stonePressure.right.toFixed(0)}%`);
 
     const speedMph = Math.abs(this.grinderSpeed * 2.237);
-    this.speedValue.textContent = speedMph.toFixed(1);
+    this.setText(this.speedValue, speedMph.toFixed(1));
 
-    this.heatValue.textContent = `${this.stoneHeat.toFixed(0)}%`;
-    this.heatFill.style.height = `${this.stoneHeat}%`;
-    this.heatFill.style.background = this.stoneHeat > 80 ? 'var(--ui-red)' :
-      this.stoneHeat > 60 ? 'var(--ui-accent)' : 'var(--ui-green)';
+    this.setText(this.heatValue, `${this.stoneHeat.toFixed(0)}%`);
+    this.setStyle(this.heatFill, 'height', `${this.stoneHeat.toFixed(1)}%`);
+    this.setStyle(this.heatFill, 'background', this.stoneHeat > 80 ? 'var(--ui-red)' :
+      this.stoneHeat > 60 ? 'var(--ui-accent)' : 'var(--ui-green)');
 
     // Grind status (cached elements)
-    if (this.isGrinding) {
-      this.grindDotEl.className = this.overheatWarning ? 'dot red' : 'dot orange';
-      this.grindStatusEl.textContent = this.overheatWarning ? 'OVERHEAT' : 'GRINDING';
-    } else {
-      this.grindDotEl.className = 'dot green';
-      this.grindStatusEl.textContent = 'DRIVING';
-    }
+    const dotClass = this.isGrinding ? (this.overheatWarning ? 'dot red' : 'dot orange') : 'dot green';
+    if (this.grindDotEl.className !== dotClass) this.grindDotEl.className = dotClass;
+    this.setText(this.grindStatusEl, this.isGrinding ? (this.overheatWarning ? 'OVERHEAT' : 'GRINDING') : 'DRIVING');
 
     // Both rails always active
-    this.leftRailLabel.style.color = 'var(--ui-accent)';
-    this.rightRailLabel.style.color = 'var(--ui-accent)';
-    this.leftRailLabel.style.fontWeight = '700';
-    this.rightRailLabel.style.fontWeight = '700';
+    this.setStyle(this.leftRailLabel, 'color', 'var(--ui-accent)');
+    this.setStyle(this.rightRailLabel, 'color', 'var(--ui-accent)');
+    this.setStyle(this.leftRailLabel, 'fontWeight', '700');
+    this.setStyle(this.rightRailLabel, 'fontWeight', '700');
   }
 
   private checkJobComplete(): void {
     if (this.jobComplete) return;
-    const completedCount = this.segmentCompleted.filter(c => c).length;
+    const completedCount = this.completedCount;
     if (completedCount >= this.sectionCount) {
       this.jobComplete = true;
       // Start inspection pass instead of immediately showing report
@@ -1182,7 +1211,7 @@ export class Game {
   private showCompletionReport(): void {
     const postJobReport = this.inspectionReport.computeJobReport(this.track, this.targetProfile);
     const elapsed = this.playTime; // excludes time spent paused
-    const completedCount = this.segmentCompleted.filter(c => c).length;
+    const completedCount = this.completedCount;
 
     const rqiAfter = postJobReport.overallRQI;
     // RQI-based stars, minus one per delayed revenue train (never below 1)
@@ -1280,6 +1309,7 @@ export class Game {
 
     // Reset scoring + grinder state
     this.segmentCompleted = new Array(this.sectionCount).fill(false);
+    this.completedCount = 0;
     this.segmentPasses = new Array(this.sectionCount).fill(0);
     this.segmentDamage = new Array(this.sectionCount).fill(0);
     this.segmentSlowOrder = new Array(this.sectionCount).fill(false);
@@ -1372,6 +1402,9 @@ export class Game {
     if (this.audioReady) this.audio.stopGrinding();
 
     this.buildWorld(job);
+    // Compile every shader for the new world now (in the background), so the
+    // first spark / freight train / headlight doesn't stall the game mid-play
+    this.engine.prewarm();
     // Grinder upgrades bought in the shop apply to this job
     this.upgrades = upgradeEffects(loadCareer().upgrades);
 

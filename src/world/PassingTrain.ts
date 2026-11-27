@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
+import { bakeStatic } from '../core/bakeStatic';
 
 const ADJACENT_OFFSET = 5; // meters to the side
 const GAUGE_HALF = 0.8;
@@ -57,6 +58,9 @@ export class PassingTrain {
   private track: RailTrack | null = null;
   private totalLength = 300;
 
+  private headlight: THREE.PointLight;
+  private static readonly HEADLIGHT_LOCAL = new THREE.Vector3(0, 3.0, 10);
+
   /** Individual car groups for articulated curve following */
   private cars: { group: THREE.Group; offset: number; halfLen: number }[] = [];
 
@@ -85,6 +89,7 @@ export class PassingTrain {
     };
 
     const addCar = (g: THREE.Group, offset: number, halfLen: number) => {
+      bakeStatic(g); // a car's parts never move relative to each other: merge them
       this.cars.push({ group: g, offset, halfLen });
       this.group.add(g);
     };
@@ -97,8 +102,12 @@ export class PassingTrain {
     cab.position.set(0, 4.1, -5); loco.add(cab);
     const hl = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), hlMat);
     hl.position.set(0, 3.0, 9.1); loco.add(hl);
-    const hLight = new THREE.PointLight(0xffffff, 4, 35);
-    hLight.position.set(0, 3.0, 10); loco.add(hLight);
+    // The headlight's real light lives outside the (often hidden) train group:
+    // a light that appears and disappears changes the scene's light count,
+    // which makes three.js recompile every material — a visible stutter.
+    // Instead it always exists and is simply turned down to 0 between passes.
+    this.headlight = new THREE.PointLight(0xffffff, 0, 35);
+    this.adjacentTrack.add(this.headlight);
     // Stripe
     const stripeMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.15, roughness: 0.5 });
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.05, 0.15, 18.05), stripeMat);
@@ -134,8 +143,13 @@ export class PassingTrain {
    */
   span(): { front: number; rear: number; speed: number } | null {
     if (!this.active) return null;
-    return { front: this.position + 9, rear: this.position - 103, speed: this.speed };
+    // (one reused object: this is asked every frame)
+    this._span.front = this.position + 9;
+    this._span.rear = this.position - 103;
+    this._span.speed = this.speed;
+    return this._span;
   }
+  private _span = { front: 0, rear: 0, speed: 0 };
 
   update(dt: number, grinderDist: number): void {
     if (!this.active) {
@@ -178,6 +192,15 @@ export class PassingTrain {
         const up = this._tv3.crossVectors(fwd, right).normalize();
         car.group.quaternion.setFromRotationMatrix(this._tm.makeBasis(right, up, fwd));
       }
+      // Headlight follows the locomotive (the first car)
+      const loco = this.cars[0];
+      if (loco) {
+        this.headlight.intensity = loco.group.visible ? 4 : 0;
+        if (loco.group.visible) {
+          loco.group.updateMatrix();
+          this.headlight.position.copy(PassingTrain.HEADLIGHT_LOCAL).applyMatrix4(loco.group.matrix);
+        }
+      }
     }
 
     if (!this.hornPlayed && this.position > grinderDist - 20) {
@@ -190,6 +213,7 @@ export class PassingTrain {
     if (this.position - 103 > this.totalLength) {
       this.active = false;
       this.group.visible = false;
+      this.headlight.intensity = 0;
       this.timer = 0;
       this.nextEventIn = 60 + Math.random() * 60;
     }

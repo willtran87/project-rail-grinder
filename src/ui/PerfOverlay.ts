@@ -2,7 +2,8 @@
  * PerfOverlay - A tiny FPS / frame-time readout for checking performance.
  *
  * Toggle with the backtick key (`). Shows average FPS, average frame time,
- * and the worst frame in the last half-second (spikes = visible stutter).
+ * the worst frame in the last half-second (spikes = visible stutter), and
+ * draw calls / triangles per frame.
  * The on/off choice is remembered.
  */
 
@@ -45,7 +46,7 @@ export class PerfOverlay {
    * Call once per frame. Measures real wall-clock frame time itself, because
    * the game's dt is capped at 100ms and would hide big stalls.
    */
-  update(): void {
+  update(stats?: { calls: number; triangles: number }): void {
     const now = performance.now();
     const frameSeconds = (now - this.lastTime) / 1000;
     this.lastTime = now;
@@ -59,7 +60,12 @@ export class PerfOverlay {
     const avgMs = (this.elapsed / this.frames) * 1000;
     const worstMs = this.worst * 1000;
     this.el.style.color = fps >= 55 ? '#9f9' : fps >= 30 ? '#fd6' : '#f77';
-    this.el.textContent = `${fps.toFixed(0)} FPS  ${avgMs.toFixed(1)} ms  (worst ${worstMs.toFixed(1)} ms)`;
+    let text = `${fps.toFixed(0)} FPS  ${avgMs.toFixed(1)} ms  (worst ${worstMs.toFixed(1)} ms)`;
+    // Draw calls are the usual cause of a slow frame: a jump here means some
+    // new object isn't merged / instanced
+    if (stats) text += `
+${stats.calls} draw calls  ${(stats.triangles / 1000).toFixed(0)}k triangles`;
+    this.el.textContent = text;
 
     this.elapsed = 0;
     this.frames = 0;

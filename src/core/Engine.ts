@@ -14,6 +14,16 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
  *  3 = each "pixel" is 3x3 screen pixels. Adjust for more/less chunky. */
 const PIXEL_SCALE = 2; // mild pixelation — detail readable but stylized
 
+/** Half the width of the sun's shadow box (metres) */
+const SHADOW_HALF_SIZE = 35;
+
+/**
+ * Bloom blur levels. three.js uses 5; at our half-resolution pixel-art target
+ * the two widest levels are only a few pixels across, so 3 look the same and
+ * save four render passes. Their strength is folded into the levels we keep.
+ */
+const BLOOM_LEVELS = 3;
+
 /**
  * Final full-screen shader: takes the low-res HDR scene (with bloom already
  * added), applies tone mapping + sRGB output, then a simple colour grade:
@@ -94,10 +104,12 @@ export class Engine {
 
   constructor(canvas: HTMLCanvasElement) {
     // Renderer setup - NO antialiasing for pixel art
+    // (No logarithmic depth buffer: with near 0.5 m / far 800 m a normal depth
+    // buffer has plenty of precision, and the log version writes depth from the
+    // fragment shader, which stops the GPU skipping hidden pixels early.)
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: false,
-      logarithmicDepthBuffer: true,
     });
     this.renderer.setPixelRatio(1); // fixed at 1 for pixel art
     this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -106,6 +118,9 @@ export class Engine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.autoClear = false;
+    // Count draw calls for the whole frame (scene + bloom + output), not per
+    // render() call — the FPS overlay shows them
+    this.renderer.info.autoReset = false;
 
     // Scene
     this.scene = new THREE.Scene();
@@ -152,6 +167,7 @@ export class Engine {
     // Bloom runs at the same low resolution, so the glow stays pixel-art chunky.
     // threshold: only linear brightness above ~0.9 glows (sparks, sun, lamps)
     this.bloom = new UnrealBloomPass(new THREE.Vector2(lowW, lowH), 0.4, 0.5, 0.9);
+    this.trimBloomLevels();
 
     // Fullscreen quad to display the pixelated render (tone map + colour grade)
     this.pixelQuadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -183,14 +199,15 @@ export class Engine {
     this.directionalLight.position.set(10, 20, 10);
     this.directionalLight.castShadow = true;
     // 1024 is plenty: the scene renders at half resolution, and the shadow box
-    // follows the grinder (DayNightCycle) so it only needs to cover ~90m around it
+    // sits just ahead of the camera (DayNightCycle), so 70 m covers everything
+    // close enough for a shadow to be more than a pixel or two
     this.directionalLight.shadow.mapSize.set(1024, 1024);
     this.directionalLight.shadow.camera.near = 1;
     this.directionalLight.shadow.camera.far = 200;
-    this.directionalLight.shadow.camera.left = -45;
-    this.directionalLight.shadow.camera.right = 45;
-    this.directionalLight.shadow.camera.top = 45;
-    this.directionalLight.shadow.camera.bottom = -45;
+    this.directionalLight.shadow.camera.left = -SHADOW_HALF_SIZE;
+    this.directionalLight.shadow.camera.right = SHADOW_HALF_SIZE;
+    this.directionalLight.shadow.camera.top = SHADOW_HALF_SIZE;
+    this.directionalLight.shadow.camera.bottom = -SHADOW_HALF_SIZE;
     this.directionalLight.shadow.bias = -0.002;
     this.directionalLight.shadow.normalBias = 0.02;
     this.scene.add(this.directionalLight);
@@ -201,6 +218,47 @@ export class Engine {
 
     // Start the animation loop
     this.renderer.setAnimationLoop(this.animate.bind(this));
+  }
+
+  /**
+   * Run bloom with fewer blur levels (see BLOOM_LEVELS). The pass loops over
+   * `nMips`; the composite shader still reads all five textures, so the unused
+   * ones get a weight of 0 and their share goes to the widest level we keep.
+   */
+  private trimBloomLevels(): void {
+    const bloom = this.bloom as unknown as {
+      nMips: number;
+      bloomTintColors: THREE.Vector3[];
+      compositeMaterial: THREE.ShaderMaterial;
+    };
+    const factors = bloom.compositeMaterial.uniforms.bloomFactors.value as number[];
+    let dropped = 0;
+    for (let i = BLOOM_LEVELS; i < factors.length; i++) { dropped += factors[i]; factors[i] = 0; }
+    factors[BLOOM_LEVELS - 1] += dropped;
+    bloom.nMips = BLOOM_LEVELS;
+  }
+
+  /** True while shaders are being compiled in the background (see prewarm) */
+  private compiling = false;
+
+  /**
+   * Compile every material's shader for the current scene and lights now,
+   * in the background where the browser supports it. Call after building a
+   * job's world or changing anything that changes shaders (shadows on/off).
+   * While it runs, the last frame stays on screen instead of the game
+   * freezing for a second or more mid-play.
+   */
+  prewarm(): void {
+    this.compiling = true;
+    // Compile for the low-res target the scene is really drawn into: shaders
+    // for the screen (tone mapped, sRGB) are different programs
+    const previous = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(this.renderTarget);
+    const done = this.renderer.compileAsync(this.scene, this.camera);
+    this.renderer.setRenderTarget(previous);
+    done
+      .catch(() => { /* fall back to compiling on first draw */ })
+      .finally(() => { this.compiling = false; });
   }
 
   /** Register a callback to be called every frame with delta time */
@@ -222,7 +280,16 @@ export class Engine {
       cb(dt);
     }
 
+    // Shaders still compiling in the background: keep showing the last frame
+    if (this.compiling) {
+      this.renderer.setRenderTarget(null);
+      this.renderer.clear();
+      this.renderer.render(this.pixelQuadScene, this.pixelQuadCamera);
+      return;
+    }
+
     // Step 1: Render the scene to the low-res render target
+    this.renderer.info.reset(); // stats (draw calls etc.) cover the whole frame
     this.renderer.setRenderTarget(this.renderTarget);
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);

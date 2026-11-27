@@ -7,6 +7,7 @@
  */
 
 import * as THREE from 'three';
+import { bakeStatic } from '../core/bakeStatic';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
 
@@ -58,6 +59,9 @@ export class Environment {
     this.addDistantMountains();
     // (stars now come from the SkyDome shader, which fades them in only at night)
     if (options.snow) this.applySnow(options.snow);
+    // Hundreds of one-off poles, signs, hills and mountains never move:
+    // merge them into one mesh per material (instanced trees etc. are skipped)
+    bakeStatic(this.group);
   }
 
   /**

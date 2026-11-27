@@ -16,8 +16,14 @@ import type { RailTrack } from '../rail/RailTrack';
 /** Car offsets (m from grinderPosition) of the four grinding cars */
 export const GRIND_CAR_OFFSETS = [-12, 0, 12, 24];
 const STONES_PER_CAR = 8;
-/** Work lights: headlight, front grind area, rear grind area, tail */
-const LIGHT_OFFSETS = [-42, -6, 18, 67];
+/**
+ * Work lights: cab floodlight, and one wide light over the middle of the four
+ * grinding cars. (Every light costs a little on every lit pixel of the whole
+ * scene, and the spark + contact lights already glow orange right at the
+ * stones, so two work lights look the same as the old four.)
+ */
+const LIGHT_OFFSETS = [-42, 6];
+const LIGHT_RANGE = [8, 22];
 
 type EmitPoint = { position: THREE.Vector3; forward: THREE.Vector3; right: THREE.Vector3 };
 
@@ -30,6 +36,7 @@ export class GrindEffects {
   private _dustOrigin = new THREE.Vector3();
   private _dustDrift = new THREE.Vector3();
   private lights: THREE.PointLight[] = [];
+  private _burstPos = new THREE.Vector3();
   // Pre-allocated emit points (avoids creating 96 vectors every frame)
   private emitPool: EmitPoint[] = [];
 
@@ -45,7 +52,7 @@ export class GrindEffects {
     scene.add(this.contact.group);
 
     for (let i = 0; i < LIGHT_OFFSETS.length; i++) {
-      const light = new THREE.PointLight(0xff8833, 0, 8);
+      const light = new THREE.PointLight(0xff8833, 0, LIGHT_RANGE[i]);
       scene.add(light);
       this.lights.push(light);
     }
@@ -73,8 +80,8 @@ export class GrindEffects {
       setTimeout(() => {
         const tp = track.getTrackPoint(d);
         for (const side of [-1, 1]) {
-          const p = tp.position.clone().addScaledVector(tp.right, side * 0.8);
-          this.sparks.burst(p, 14);
+          this._burstPos.copy(tp.position).addScaledVector(tp.right, side * 0.8);
+          this.sparks.burst(this._burstPos, 14);
         }
       }, i * 70);
     }
@@ -111,7 +118,7 @@ export class GrindEffects {
       this.lights[li].position.copy(tp.position);
       this.lights[li].position.y += 2.5;
       this.lights[li].intensity = li === 0 ? 4
-        : grinding ? (avgPressure / 50) * (1.5 + Math.random()) : 1.5;
+        : grinding ? (avgPressure / 50) * (2.2 + Math.random() * 1.4) : 2.2;
     }
 
     if (!grinding) {

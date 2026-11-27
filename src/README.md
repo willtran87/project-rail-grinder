@@ -13,6 +13,8 @@ src/
 │   ├── CameraController.ts  # Camera views (1-5), screen shake, inspection cinematic
 │   ├── storage.ts           # Safe localStorage wrapper (never throws)
 │   ├── quality.ts           # Graphics quality presets (key G)
+│   ├── bakeStatic.ts        # Merges a model's fixed parts into one mesh per material
+│   ├── performance.test.ts  # Tests for the merging, batched rails and track lookup
 │   └── dispose.ts           # Frees GPU memory of discarded scene objects
 ├── game/                    # Pure game logic — no Three.js/DOM, fully unit-tested
 │   ├── rules.ts             # ALL tuning numbers + scoring formulas (rebalance here)
@@ -22,7 +24,8 @@ src/
 │   └── *.test.ts            # Tests for the above (npm test)
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
-│   ├── RailSegment.ts       # 3D mesh extruded from a profile, with visual state
+│   ├── RailSegment.ts       # One 5 m stretch of rail: visual state (rust → steel, hot, flash)
+│   ├── RailBatch.ts         # Draws every rail segment as ONE mesh (+ one for running bands)
 │   ├── RailTrack.ts         # Curved spline track with segments, ties, ballast
 │   ├── *.test.ts            # Unit tests for profile math and section layout (npm test)
 │   └── ProfileRenderer.ts   # 2D canvas overlay drawing the profile curves
@@ -73,7 +76,8 @@ Game.ts (orchestrator)
   │                  (render to low-res target → upscale with NearestFilter)
   │
   ├── RailTrack ─── CatmullRomCurve3 spline → positions everything along the curve
-  │   ├── RailSegment[] (left + right) ─── ExtrudeGeometry from RailProfile
+  │   ├── RailSegment[] (left + right) ─── look of each 5 m stretch
+  │   ├── RailBatch ─── all segments in one mesh, built from the RailProfiles
   │   ├── Ties (InstancedMesh via Environment)
   │   └── Ballast chunks
   │
@@ -82,7 +86,7 @@ Game.ts (orchestrator)
   │
   ├── handleGrinding() ─── each frame while SPACE held (numbers from game/rules.ts):
   │   ├── RailProfile.removeMetalAt() ─── modifies the 2D cross-section
-  │   ├── RailSegment.rebuildMesh() ─── regenerates 3D geometry
+  │   ├── RailSegment.setProfile() ─── rewrites that segment's vertices in place
   │   ├── RailSegment.setGrindProgress() ─── rust → steel, driven by section accuracy
   │   ├── GrindEffects.setState() ─── 32 spark sources across 4 cars + work lights
   │   ├── AudioManager.startGrinding() ─── pitch varies with contact deviation
@@ -108,10 +112,10 @@ Between those steps, `Engine` adds two post-processing passes, both at the low r
 - **Colour grade** (in the output shader): tone mapping, then lift/gain/saturation/contrast. `DayNightCycle` sets these (plus bloom strength) per time of day.
 
 ### Sky, Fog and Shadows
-`SkyDome` is a shader-drawn gradient sphere with a sun/moon disc and twinkling stars (night only). Fog uses the sky’s horizon colour so distant scenery melts into the sky. `GroundMist` adds drifting haze layers that are clear around the grinder and thicken with distance. The sun’s shadow box follows the grinder, so shadows work along the whole track (it used to be fixed near the start).
+`SkyDome` is a shader-drawn gradient sphere with a sun/moon disc and twinkling stars (night only). Fog uses the sky’s horizon colour so distant scenery melts into the sky. `GroundMist` adds drifting haze layers that are clear around the grinder and thicken with distance. The sun’s 70 m shadow box sits just ahead of the camera, so shadows work along the whole track and are only drawn where you can see them. It snaps to whole shadow-map texels, so shadow edges don’t shimmer as the camera moves.
 
 ### Curved Track via CatmullRom Spline
-The track is a `CatmullRomCurve3` with 1000 arc-length subdivisions. Everything — rail segments, ties, ballast, grinder cars, passing trains, scenery — positions itself by querying `getTrackPoint(distance)` which returns position + forward + right + up + banking angle.
+The track is a `CatmullRomCurve3` with 1000 arc-length subdivisions. Everything — rail segments, ties, ballast, grinder cars, passing trains, scenery — positions itself by querying `getTrackPoint(distance)` which returns position + forward + right + up + banking angle. The spline is sampled once into a lookup table (every 25 cm) and `getTrackPoint` interpolates it, which is much cheaper than asking the spline ~130 times a frame. The result comes from a pool of 16 reused objects: copy anything you want to keep.
 
 ### Bogie-Based Car Positioning
 Each car computes its orientation from the line between its front and rear bogie positions on the spline. This naturally produces smooth articulation through curves — a long car on a wide curve barely rotates, a short car on a tight curve rotates more.
@@ -124,6 +128,23 @@ Trees, bushes, rocks, grass use `InstancedMesh` to reduce draw calls from ~2000 
 
 ### Track Section Offset
 The track has a 50m lead-in zone before game sections begin (`sectionOffset`). This lets the 9-car grinder consist spread out along the track without trailing cars clamping to position 0. `getSectionIndex()` and `getSegmentsForSection()` account for this offset; `getSegmentIndex()` (visual only) does not.
+
+### Merged Meshes ("baking")
+Every separate mesh is a draw call, and another one for the shadow map. The grinder consist was built from ~4,000 small boxes, cylinders and spheres, which alone cost ~38 ms a frame. `core/bakeStatic.ts` merges all of a model's fixed parts into one mesh per material after it's built:
+- `RailGrinder`: each car is baked; the drop-down grind modules stay separate because they move.
+- `PassingTrain`: each freight car is baked.
+- `Environment`: poles, signals, hills and mountains are baked; trees, bushes, rocks and grass are already instanced.
+- `Landmarks` uses its own version of the same idea.
+
+Parts smaller than ~35 cm, or thinner than ~6 cm (bolts, rivets, handrails), stop casting shadows while being merged; at the game's pixel resolution their shadows were under a pixel anyway. When you add detail to a model, keep sharing the `this.m.*` materials: every new material is another draw call after baking.
+
+### Batched Rails
+`RailBatch` draws all rail segments of a track as one mesh, plus one mesh for the polished running bands. Each vertex stores which segment it belongs to, and a small float texture holds each segment's colour, glow, metalness, roughness and band opacity, which the shader reads. `RailSegment` keeps the colour logic and writes its numbers into the batch. Grinding rewrites only that segment's vertices in the existing buffer, and only that slice is uploaded. Only segments that are cooling down or flashing are updated each frame (`RailTrack.updateSegments`).
+
+### Shader Warm-up
+three.js compiles a material's shader the first time it's drawn. It also recompiles everything when the number of lights changes, or when shadows are switched on or off. That used to freeze the game for ~4 seconds on the first freight train and on the G key. Now:
+- `Engine.prewarm()` compiles everything in the background after a job loads and after G, holding the last frame meanwhile.
+- The freight's headlight always exists and is turned to 0 when the train isn't passing, so the light count never changes during play.
 
 ### Pre-allocated Temp Objects
 Hot-path methods (`handleGrinderMovement`, `handleInspectionPass`, `getTrackPoint`, `handleCamera`) reuse pre-allocated `Vector3`/`Quaternion`/`Matrix4` objects to avoid per-frame garbage collection pressure.
@@ -173,6 +194,7 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 - **Clearances**: nothing may stand within ~2.2 m of the main track centre, or 3.3–6.7 m on the right where the adjacent track's freight passes. Lineside poles, mileposts and signals are placed by distance along the track (`Environment.placeLineside`) so they stay clear on curves too.
 - **Freight work-zone speed** (`freightAllowedSpeed` in `PassingTrain.ts`): the freight brakes to 11 m/s (~25 mph) before the zone around the grinder, then speeds back up once past it.
 - **Rain/snow shelter** (`Weather.setShelter`): `Game` passes a chain of points along the consist each frame; drops that land within 1.7 m of one and below roof height are removed.
+- **Tests for the performance work** (`core/performance.test.ts`): merged meshes keep their place and shadow rules, the lookup table matches the spline to under 1 mm, and grinding rewrites only one segment's slice of the rail buffer.
 - **Tests for the world logic**: `world/Landmarks.test.ts` covers the crossing car. `world/livingWorld.test.ts` covers time-of-day blending, the weather director, freight speed and slow-order braking. These are pure functions, so they need no browser.
 - **Hot rail** (`RailSegment.heatUp`): `Game.handleGrinding` heats the segments under each grinding car; they cool in `update()` over ~3.5 s.
 
@@ -190,10 +212,22 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 
 ## Performance Notes
 
+Measured in headless Chrome (RTX 3090, 1600×900) on Marias Pass:
+
+| | Before | After |
+|---|---|---|
+| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) |
+| Renderer CPU per frame | 42.6 ms | ~4–5 ms |
+| Draw calls per frame | ~6,700 | ~380 |
+| Meshes in the scene | ~5,100 | ~360 |
+| First freight train | 4.7 s freeze | no freeze |
+| G key (shadows off) | 4 s freeze | ~40 ms |
+
 - **Target**: 60fps on modern hardware at 1080p
-- **Main bottleneck**: `RailSegment.rebuildMesh()` during grinding (ExtrudeGeometry rebuild)
-- **Light count**: 8 total (1 directional, 1 hemisphere, 4 work lights, 1 spark light, 1 headlight spot — no shadows)
-- **Shadows**: 1024² map (High) covering ±45m around the grinder — the most expensive pass; drop to Medium/Low with G
-- **Draw calls**: ties and ballast are instanced too (one call each instead of ~800)
+- **Draw calls are the thing to watch.** The FPS counter (backtick) shows draw calls and triangles per frame. If it jumps after you add something, the new object probably needs to be baked, instanced or given a shared material.
+- **Light count**: 7 total (1 directional, 1 hemisphere, 2 work lights, 1 spark light, 1 contact glow, 1 headlight spot), plus the freight headlight (always present, 0 when idle). Every light costs something on every lit pixel, so prefer emissive materials and bloom for small glows.
+- **Shadows**: a 1024² map (High) covering 70 m just ahead of the camera.
+- **Depth buffer**: a normal depth buffer (near 0.5 m, far 800 m is plenty). The logarithmic one stopped the GPU skipping hidden pixels early.
+- **Bloom**: 3 blur levels instead of three.js's 5; the two widest were only a few pixels at this resolution.
+- **2D overlays**: the profile displays and track map redraw only when something changes, and at 30 fps while something on them is pulsing. HUD text is only written when its value changes.
 - **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)
-- **Measure**: backtick toggles the FPS / frame-time counter
