@@ -62,6 +62,8 @@ export class DustSystem {
     uScale: { value: 300 },
   };
   private next = 0; // ring-buffer write position
+  /** Puffs still drifting; 0 = nothing to update or upload */
+  private active = 0;
 
   constructor() {
     for (let i = 0; i < MAX_PUFFS; i++) {
@@ -94,6 +96,7 @@ export class DustSystem {
     p.vel.x += (Math.random() - 0.5) * 0.6;
     p.vel.y = 0.3 + Math.random() * 0.5;
     p.vel.z += (Math.random() - 0.5) * 0.6;
+    if (p.age >= p.life) this.active++; // recycled a finished puff
     p.age = 0;
     p.life = 2 + Math.random() * 2;
     p.size = 0.8 + Math.random() * 0.8;
@@ -110,6 +113,9 @@ export class DustSystem {
   }
 
   update(dt: number): void {
+    // No dust in the air: nothing to move, upload or draw
+    this.points.visible = this.active > 0;
+    if (this.active === 0) return;
     for (let i = 0; i < MAX_PUFFS; i++) {
       const p = this.puffs[i];
       if (p.age >= p.life) {
@@ -117,6 +123,7 @@ export class DustSystem {
         continue;
       }
       p.age += dt;
+      if (p.age >= p.life) { this.active--; this.alphas[i] = 0; continue; }
       p.vel.multiplyScalar(1 - dt * 0.6); // air drag
       p.pos.addScaledVector(p.vel, dt);
       const t = p.age / p.life;

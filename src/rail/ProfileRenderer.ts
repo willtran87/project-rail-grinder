@@ -93,7 +93,7 @@ export class ProfileRenderer {
    */
   draw(current: RailProfile, target?: TargetProfile): void {
     const now = performance.now();
-    const key = `${current.metalRemoved}|${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
+    const key = `${current.version}|${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
       + `${this.stoneVisible}|${this.stoneGrinding}|${this.damageCount}|${this.passCount}|`
       + `${this.borderFlash}|${this.mirrored}|${isColorblindMode()}|${this.worstZones.length}`;
     const animating = this.worstZones.length > 0 || (this.ghostProfile !== null && this.ghostAlpha > 0.01);
@@ -360,13 +360,13 @@ export class ProfileRenderer {
     ctx.font = '9px monospace';
     ctx.fillStyle = LABEL_COLOR;
 
+    // All grid lines in one path (one stroke), labels after
+    ctx.beginPath();
+    ctx.textAlign = 'center';
     for (let x = Math.ceil(minX / 10) * 10; x <= maxX; x += 10) {
       const cx = toCanvasX(x);
-      ctx.beginPath();
       ctx.moveTo(cx, PADDING);
       ctx.lineTo(cx, this.canvas.height - PADDING);
-      ctx.stroke();
-      ctx.textAlign = 'center';
       ctx.fillText(`${x}`, cx, this.canvas.height - PADDING + 12);
     }
 
@@ -374,15 +374,14 @@ export class ProfileRenderer {
     // so they never stack on top of each other on a short panel.
     const pxPerMm = Math.abs(toCanvasY(maxY) - toCanvasY(minY)) / (maxY - minY);
     const yStep = [0.5, 1, 2, 5, 10, 20].find(s => s * pxPerMm >= 16) ?? 20;
+    ctx.textAlign = 'left';
     for (let y = Math.ceil(minY / yStep) * yStep; y <= maxY; y += yStep) {
       const cy = toCanvasY(y);
-      ctx.beginPath();
       ctx.moveTo(PADDING, cy);
       ctx.lineTo(this.canvas.width - PADDING, cy);
-      ctx.stroke();
-      ctx.textAlign = 'left';
       ctx.fillText(y.toFixed(yStep < 1 ? 1 : 0), 2, cy + 3);
     }
+    ctx.stroke();
 
     // Axis labels
     ctx.fillStyle = '#555';
@@ -402,26 +401,25 @@ export class ProfileRenderer {
     toCanvasY: (y: number) => number
   ): void {
     const deviation = current.compare(target);
-
-    for (let i = 0; i < current.points.length - 1; i++) {
-      const dev = Math.abs(deviation.pointDeviations[i]);
-      let color: string;
-      if (dev <= target.tolerance) {
-        color = getPalette().good;
-      } else if (dev <= target.tolerance * 3) {
-        color = getPalette().close;
-      } else if (deviation.pointDeviations[i] < 0) {
-        color = getPalette().over;
-      } else {
-        color = getPalette().bad;
-      }
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2.5;
+    const pal = getPalette();
+    // One path per colour, each line piece its own sub-path: the same pixels as
+    // stroking the ~150 pieces one by one, but 4 strokes instead of ~150
+    const colors = [pal.good, pal.close, pal.over, pal.bad];
+    ctx.lineWidth = 2.5;
+    for (let c = 0; c < colors.length; c++) {
+      ctx.strokeStyle = colors[c];
       ctx.beginPath();
-      ctx.moveTo(toCanvasX(current.points[i].x), toCanvasY(current.points[i].y));
-      ctx.lineTo(toCanvasX(current.points[i + 1].x), toCanvasY(current.points[i + 1].y));
-      ctx.stroke();
+      let any = false;
+      for (let i = 0; i < current.points.length - 1; i++) {
+        const d = deviation.pointDeviations[i];
+        const dev = Math.abs(d);
+        const band = dev <= target.tolerance ? 0 : dev <= target.tolerance * 3 ? 1 : d < 0 ? 2 : 3;
+        if (band !== c) continue;
+        ctx.moveTo(toCanvasX(current.points[i].x), toCanvasY(current.points[i].y));
+        ctx.lineTo(toCanvasX(current.points[i + 1].x), toCanvasY(current.points[i + 1].y));
+        any = true;
+      }
+      if (any) ctx.stroke();
     }
   }
 

@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { createTrainBodyTexture, createRoughnessMap } from './ProceduralTextures';
-import { bakeStatic } from '../core/bakeStatic';
+import { bakeStatic, createVertexPbrMaterial } from '../core/bakeStatic';
 
 const WG = 0.72;
 
@@ -16,7 +16,10 @@ export class RailGrinder {
   readonly group: THREE.Group;
   private beacons: THREE.Mesh[] = [];
   private beaconPhase = 0;
-  private grindModules: THREE.Mesh[] = [];
+  /** One group per grinding car holding its 8 stone modules (they drop together) */
+  private grindModules: THREE.Object3D[] = [];
+  /** Shared by every car: plain colours are stored per vertex (see bakeStatic) */
+  private vertexMat = createVertexPbrMaterial();
   private grindModuleRestY: number[] = [];
   private _grinding = false;
   private m: Record<string, THREE.Material>;
@@ -201,11 +204,19 @@ export class RailGrinder {
 
   /**
    * Register a finished car. Its hundreds of fixed parts are merged into a few
-   * meshes (one per material) — the drop-down grind modules stay separate
-   * because they move. Without this the consist alone was ~4,000 draw calls.
+   * meshes — the drop-down grind modules stay separate because they move.
+   * Without this the consist alone was ~4,000 draw calls; now it is ~5 per car.
    */
   private reg(g: THREE.Group, off: number, hl: number) {
-    bakeStatic(g, { keep: new Set<THREE.Object3D>(this.grindModules) });
+    bakeStatic(g, {
+      keep: new Set<THREE.Object3D>(this.grindModules),
+      // ~15 plain paint/metal materials → one draw call per car
+      vertexMaterial: this.vertexMat,
+      // headlights and beacons change brightness every frame: keep their materials
+      animated: new Set<THREE.Material>([this.m.hl, this.m.beacon]),
+      // all shadows from one shadow-only mesh per car
+      shadowProxy: true,
+    });
     this.cars.push({ group: g, offset: off, halfLength: hl });
     this.group.add(g);
   }
@@ -327,13 +338,18 @@ export class RailGrinder {
     // Red stripe at mid-height of vertical section (well within flat wall)
     for (const s of [-1, 1]) this.B(g, 0.03, 0.1, len - 1, this.m.red, s * 1.55, 2.0, 0);
 
-    // Grinding modules hidden inside the body
+    // Grinding modules hidden inside the body. All 8 drop together, so they
+    // live in one group that is merged into a single mesh and moved as one.
+    const modules = new THREE.Group();
+    g.add(modules);
     for (let i = 0; i < 8; i++) {
       const z = -4.5 + i * 1.3;
-      const mod = this.B(g, 2.0, 0.3, 0.9, this.m.fmid, 0, 1.2, z);
-      this.grindModules.push(mod); this.grindModuleRestY.push(1.2);
+      const mod = this.B(modules, 2.0, 0.3, 0.9, this.m.fmid, 0, 1.2, z);
+      mod.castShadow = false; // inside the body: its shadow could never be seen
       this.C(g, 0.12, 0.12, 0.7, 12, this.m.pipe, 0, 0.95, z, 0, Math.PI / 2);
     }
+    bakeStatic(modules, { vertexMaterial: this.vertexMat });
+    this.grindModules.push(modules); this.grindModuleRestY.push(0);
 
     // === SPARK CONTAINMENT SYSTEM ===
     // Steel curtain frames (L-shaped brackets holding the tarpaulins)

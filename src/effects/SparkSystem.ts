@@ -41,12 +41,18 @@ export class SparkSystem {
   private colors: Float32Array;
   private geometry: THREE.BufferGeometry;
 
-  readonly sparkLight: THREE.PointLight;
+  /** How brightly the sparks would light their surroundings (see GrindEffects) */
+  readonly sparkLight = { position: new THREE.Vector3(), intensity: 0 };
 
   /** Multiple emit points along the grinding section */
   private emitPoints: EmitPoint[] = [];
   private emitting = false;
   private intensity = 1;
+  /** Indices of dead sparks, ready to reuse (no searching through all 800) */
+  private freeIdx: number[] = [];
+  private aliveCount = 0;
+  /** The buffers already show no sparks: nothing to update or upload */
+  private idle = true;
 
   constructor() {
     // 2 vertices (head + tail) per spark
@@ -64,6 +70,7 @@ export class SparkSystem {
       // Hide all initially (park both ends below the ground)
       this.positions[i * 6 + 1] = -100;
       this.positions[i * 6 + 4] = -100;
+      this.freeIdx.push(MAX_SPARKS - 1 - i); // pop() hands out 0, 1, 2 …
     }
 
     this.geometry = new THREE.BufferGeometry();
@@ -80,7 +87,6 @@ export class SparkSystem {
     this.streaks = new THREE.LineSegments(this.geometry, material);
     this.streaks.frustumCulled = false;
 
-    this.sparkLight = new THREE.PointLight(0xff8833, 0, 15);
   }
 
   /**
@@ -110,6 +116,14 @@ export class SparkSystem {
       }
     }
 
+    // Nothing alive and nothing on screen: skip the loop and the GPU upload
+    if (this.aliveCount === 0 && this.idle) {
+      this.sparkLight.intensity *= 0.9;
+      this.streaks.visible = false;
+      return;
+    }
+    this.streaks.visible = true;
+
     // Update existing sparks
     for (let i = 0; i < MAX_SPARKS; i++) {
       const spark = this.sparks[i];
@@ -123,6 +137,11 @@ export class SparkSystem {
       spark.age += dt;
       if (spark.age >= spark.maxAge) {
         spark.alive = false;
+        this.freeIdx.push(i);
+        this.aliveCount--;
+        // park it now (the dead-spark branch above won't run until next frame)
+        this.positions[v + 1] = -100;
+        this.positions[v + 4] = -100;
         continue;
       }
 
@@ -174,6 +193,7 @@ export class SparkSystem {
 
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.attributes.color.needsUpdate = true;
+    this.idle = this.aliveCount === 0; // this upload already shows them all gone
 
     // Spark light follows the middle emit point
     if (this.emitting && this.emitPoints.length > 0) {
@@ -205,11 +225,12 @@ export class SparkSystem {
   }
 
   /** Find a spark slot that isn't in use (or null if all 800 are flying) */
+  /** A dead spark to reuse (the caller makes it alive), or null if all 800 are flying */
   private freeSpark(): Spark | null {
-    for (const s of this.sparks) {
-      if (!s.alive) return s;
-    }
-    return null;
+    const i = this.freeIdx.pop();
+    if (i === undefined) return null;
+    this.aliveCount++;
+    return this.sparks[i];
   }
 
   private emitSpark(ep: EmitPoint): void {

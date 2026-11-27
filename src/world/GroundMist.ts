@@ -88,6 +88,7 @@ export class GroundMist {
         depthWrite: false,
         fog: false,           // mist IS the fog — don't fade it twice
         side: THREE.DoubleSide,
+        forceSinglePass: true, // see-through + double-sided: draw once, not back-then-front (same look; avoids a shader re-check each draw)
       });
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), mat);
       mesh.rotation.x = -Math.PI / 2;

@@ -78,6 +78,7 @@ export class ConsistLights {
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true, // see-through + double-sided: draw once, not back-then-front (same look; avoids a shader re-check each draw)
       blending: THREE.AdditiveBlending,
     });
     this.beam = new THREE.Mesh(geo, mat);

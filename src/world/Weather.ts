@@ -9,6 +9,12 @@
  *   rain - falling streaks (line segments, faster = longer)
  *   snow - soft round flakes that drift and sway
  *
+ * PERFORMANCE: the drops and flakes are animated entirely on the GPU. Each
+ * one gets a fixed random seed (start spot, phase, speed) once; the vertex
+ * shader works out where it is from the time, wraps it into a box around the
+ * grinder and hides it once it has hit a train roof. The CPU only updates a
+ * few uniforms per frame instead of moving 2,000 particles and re-uploading them.
+ *
  * Outputs read by Game: `overcast` (→ DayNightCycle), `intensity`, `haze`.
  * Key P forces showers on/off (the director carries on afterwards).
  */
@@ -45,6 +51,10 @@ export const CLIMATES: Record<Region, Climate> = {
 };
 
 const RAIN_COUNT = 2000;
+/** Max points in the train-roof chain the shader checks (Game sends ~85) */
+const MAX_SHELTER = 96;
+/** The shader's clock wraps at this many seconds (keeps float precision) */
+const TIME_WRAP = 600;
 const SNOW_COUNT = 1600;
 const AREA = 60;          // width of the box of rain/snow around the grinder (m)
 const TOP = 28;           // how high drops start (m)
@@ -92,11 +102,16 @@ export class Weather {
   readonly group = new THREE.Group();
 
   private rain: THREE.LineSegments;
-  private rainPos: Float32Array;      // 2 points per drop (top, bottom)
-  private rainSpeed: Float32Array;
   private snow: THREE.Points;
-  private snowPos: Float32Array;
-  private snowSeed: Float32Array;     // per-flake phase for the sway
+  /** Shared by the rain and snow shaders (see patchMaterial) */
+  private uniforms = {
+    uTime: { value: 0 },
+    uCentre: { value: new THREE.Vector2() },
+    uShelter: { value: new Float32Array(MAX_SHELTER * 2) },
+    uShelterCount: { value: 0 },
+    uShelterR2: { value: 0 },
+    uShelterTop: { value: 0 },
+  };
   private time = 0;
 
   private climate: Climate = CLIMATES.prairie;
@@ -112,45 +127,104 @@ export class Weather {
   /** Let the director change the weather on its own */
   auto = true;
 
-  // Shelter: rain/snow stops at the train roofs (see setShelter)
-  private shelterPts = new Float32Array(0);
-  private shelterCount = 0;
-  private shelterR2 = 0;
-  private shelterTop = 0;
-  private shelterBox = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
-
   constructor() {
-    // Rain: each drop is a short line, so fast drops read as streaks
-    this.rainPos = new Float32Array(RAIN_COUNT * 6);
-    this.rainSpeed = new Float32Array(RAIN_COUNT);
-    for (let i = 0; i < RAIN_COUNT; i++) this.respawnDrop(i, 0, 0, true);
+    // Rain: each drop is a short line (2 vertices: top and bottom of the streak)
+    const rainSeed = new Float32Array(RAIN_COUNT * 2 * 4);
+    const rainEnd = new Float32Array(RAIN_COUNT * 2);
+    for (let i = 0; i < RAIN_COUNT; i++) {
+      const x = (Math.random() - 0.5) * AREA, z = (Math.random() - 0.5) * AREA;
+      const phase = Math.random(), speed = 16 + Math.random() * 10;
+      for (let e = 0; e < 2; e++) {
+        rainSeed.set([x, z, phase, speed], (i * 2 + e) * 4);
+        rainEnd[i * 2 + e] = e;
+      }
+    }
     const rainGeo = new THREE.BufferGeometry();
-    rainGeo.setAttribute('position', new THREE.BufferAttribute(this.rainPos, 3));
-    this.rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_COUNT * 2 * 3), 3));
+    rainGeo.setAttribute('aSeed', new THREE.BufferAttribute(rainSeed, 4));
+    rainGeo.setAttribute('aEnd', new THREE.BufferAttribute(rainEnd, 1));
+    const rainMat = new THREE.LineBasicMaterial({
       color: 0xaabbcc, transparent: true, opacity: 0, depthWrite: false,
-    }));
+    });
+    this.patchMaterial(rainMat, 'rain');
+    this.rain = new THREE.LineSegments(rainGeo, rainMat);
     this.rain.frustumCulled = false;
     this.rain.visible = false;
     this.group.add(this.rain);
 
     // Snow: soft round points
-    this.snowPos = new Float32Array(SNOW_COUNT * 3);
-    this.snowSeed = new Float32Array(SNOW_COUNT);
+    const snowSeed = new Float32Array(SNOW_COUNT * 4);
     for (let i = 0; i < SNOW_COUNT; i++) {
-      this.snowPos[i * 3] = (Math.random() - 0.5) * AREA;
-      this.snowPos[i * 3 + 1] = Math.random() * TOP;
-      this.snowPos[i * 3 + 2] = (Math.random() - 0.5) * AREA;
-      this.snowSeed[i] = Math.random() * Math.PI * 2;
+      snowSeed.set([(Math.random() - 0.5) * AREA, (Math.random() - 0.5) * AREA,
+        Math.random(), Math.random() * Math.PI * 2], i * 4);
     }
     const snowGeo = new THREE.BufferGeometry();
-    snowGeo.setAttribute('position', new THREE.BufferAttribute(this.snowPos, 3));
-    this.snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({
+    snowGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SNOW_COUNT * 3), 3));
+    snowGeo.setAttribute('aSeed', new THREE.BufferAttribute(snowSeed, 4));
+    const snowMat = new THREE.PointsMaterial({
       color: 0xffffff, size: 0.1, map: makeFlakeTexture(), transparent: true,
       opacity: 0, depthWrite: false, sizeAttenuation: true,
-    }));
+    });
+    this.patchMaterial(snowMat, 'snow');
+    this.snow = new THREE.Points(snowGeo, snowMat);
     this.snow.frustumCulled = false;
     this.snow.visible = false;
     this.group.add(this.snow);
+  }
+
+  /**
+   * Move each drop / flake on the GPU. Same motion as the old CPU version:
+   *   rain - falls at its own speed (16-26 m/s) with a 2,1 m/s wind drift
+   *   snow - falls at 1.2-2 m/s, sways side to side, drifts with the wind
+   * Both wrap around in a box (AREA wide, TOP high) centred on the grinder,
+   * and vanish once they've come down onto a train roof.
+   */
+  private patchMaterial(mat: THREE.Material, kind: 'rain' | 'snow'): void {
+    const u = this.uniforms;
+    const top = TOP.toFixed(1);
+    mat.customProgramCacheKey = () => 'weather-' + kind;
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, u);
+      const motion = kind === 'rain' ? /* glsl */ `
+        float H = ${top} + 1.0;                           // falls from TOP to -1
+        float y = ${top} - mod(uTime * aSeed.w + aSeed.z * H, H);
+        vec2 xz = aSeed.xy + vec2(2.0, 1.0) * uTime;      // wind drift
+        float landY = y - aSeed.w * 0.04;                  // bottom of the streak
+        vec3 transformed = vec3(0.0, y - aEnd * aSeed.w * 0.04, 0.0);
+      ` : /* glsl */ `
+        float H = ${top};
+        float fall = 1.2 + fract(aSeed.w) * 0.8;
+        float y = ${top} - 0.5 - mod(uTime * fall + aSeed.z * H, H);
+        vec2 xz = aSeed.xy + vec2(0.8 * uTime - 0.6667 * cos(uTime * 0.9 + aSeed.w),
+                                  0.7143 * sin(uTime * 0.7 + aSeed.w * 1.3));
+        float landY = y;
+        vec3 transformed = vec3(0.0, y, 0.0);
+      `;
+      shader.vertexShader = /* glsl */ `
+        attribute vec4 aSeed;
+        ${kind === 'rain' ? 'attribute float aEnd;' : ''}
+        uniform float uTime;
+        uniform vec2 uCentre;
+        uniform vec2 uShelter[${MAX_SHELTER}];
+        uniform int uShelterCount;
+        uniform float uShelterR2;
+        uniform float uShelterTop;
+      ` + shader.vertexShader.replace('#include <begin_vertex>', /* glsl */ `
+        ${motion}
+        // wrap into the box around the grinder
+        float A = ${AREA.toFixed(1)};
+        xz = uCentre + mod(xz - uCentre + 0.5 * A, A) - 0.5 * A;
+        transformed.xz = xz;
+        // landed on a train roof? hide it until it comes round again
+        if (landY < uShelterTop) {
+          for (int i = 0; i < ${MAX_SHELTER}; i++) {
+            if (i >= uShelterCount) break;
+            vec2 d = xz - uShelter[i];
+            if (dot(d, d) < uShelterR2) { transformed.y = -10000.0; break; }
+          }
+        }
+      `);
+    };
   }
 
   get precipitation(): Precipitation { return this.climate.precip; }
@@ -187,31 +261,12 @@ export class Weather {
    * below `top` (the roof height) has hit the train and is removed.
    */
   setShelter(points: Float32Array, count: number, radius: number, top: number): void {
-    this.shelterPts = points;
-    this.shelterCount = count;
-    this.shelterR2 = radius * radius;
-    this.shelterTop = top;
-    const b = this.shelterBox;
-    b.minX = b.minZ = Infinity; b.maxX = b.maxZ = -Infinity;
-    for (let i = 0; i < count; i++) {
-      const x = points[i * 2], z = points[i * 2 + 1];
-      if (x < b.minX) b.minX = x; if (x > b.maxX) b.maxX = x;
-      if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
-    }
-    b.minX -= radius; b.maxX += radius; b.minZ -= radius; b.maxZ += radius;
-  }
-
-  /** Has a drop/flake at (x, y, z) landed on the train? */
-  private sheltered(x: number, y: number, z: number): boolean {
-    if (y > this.shelterTop || this.shelterCount === 0) return false;
-    const b = this.shelterBox;
-    if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) return false; // quick reject
-    const p = this.shelterPts;
-    for (let i = 0; i < this.shelterCount; i++) {
-      const dx = x - p[i * 2], dz = z - p[i * 2 + 1];
-      if (dx * dx + dz * dz < this.shelterR2) return true;
-    }
-    return false;
+    const u = this.uniforms;
+    const n = Math.min(count, MAX_SHELTER);
+    u.uShelter.value.set(points.subarray(0, n * 2));
+    u.uShelterCount.value = n;
+    u.uShelterR2.value = radius * radius;
+    u.uShelterTop.value = top;
   }
 
   /** Pick the next weather state for this climate */
@@ -222,17 +277,6 @@ export class Weather {
     this.stateTimer = next.duration;
   }
 
-  /** Put a raindrop back at the top, somewhere around (cx, cz) */
-  private respawnDrop(i: number, cx: number, cz: number, anyHeight = false): void {
-    const x = cx + (Math.random() - 0.5) * AREA;
-    const z = cz + (Math.random() - 0.5) * AREA;
-    const y = anyHeight ? Math.random() * TOP : TOP * (0.5 + Math.random() * 0.5);
-    const speed = 16 + Math.random() * 10;
-    this.rainSpeed[i] = speed;
-    const p = this.rainPos;
-    p[i * 6] = x; p[i * 6 + 1] = y; p[i * 6 + 2] = z;
-    p[i * 6 + 3] = x; p[i * 6 + 4] = y - speed * 0.04; p[i * 6 + 5] = z; // streak length ∝ speed
-  }
 
   /** Update weather. centre = grinder world position (rain falls around it). */
   update(dt: number, centre: THREE.Vector3): void {
@@ -255,41 +299,10 @@ export class Weather {
     this.rain.visible = !isSnow && this.intensity > 0.01;
     this.snow.visible = isSnow && this.intensity > 0.01;
 
-    if (this.rain.visible) this.updateRain(dt, centre);
-    if (this.snow.visible) this.updateSnow(dt, centre);
+    // The GPU does the rest (see patchMaterial)
+    this.uniforms.uTime.value = this.time % TIME_WRAP;
+    this.uniforms.uCentre.value.set(centre.x, centre.z);
   }
 
-  private updateRain(dt: number, c: THREE.Vector3): void {
-    const p = this.rainPos;
-    const windX = 2 * dt, windZ = 1 * dt;
-    for (let i = 0; i < RAIN_COUNT; i++) {
-      const fall = this.rainSpeed[i] * dt;
-      p[i * 6 + 1] -= fall; p[i * 6 + 4] -= fall;
-      p[i * 6] += windX; p[i * 6 + 3] += windX;
-      p[i * 6 + 2] += windZ; p[i * 6 + 5] += windZ;
-      // Hit the ground, or a train roof: start again at the top
-      if (p[i * 6 + 4] < -1 || this.sheltered(p[i * 6 + 3], p[i * 6 + 4], p[i * 6 + 5])) {
-        this.respawnDrop(i, c.x, c.z);
-      }
-    }
-    (this.rain.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-  }
 
-  private updateSnow(dt: number, c: THREE.Vector3): void {
-    const p = this.snowPos;
-    const t = this.time;
-    const half = AREA / 2;
-    for (let i = 0; i < SNOW_COUNT; i++) {
-      const s = this.snowSeed[i];
-      p[i * 3 + 1] -= (1.2 + (s % 1) * 0.8) * dt;               // slow fall
-      p[i * 3] += (Math.sin(t * 0.9 + s) * 0.6 + 0.8) * dt;     // sway + gentle wind
-      p[i * 3 + 2] += Math.cos(t * 0.7 + s * 1.3) * 0.5 * dt;
-      // Keep flakes in a box around the grinder: wrap round instead of respawning
-      // Landed (on the ground or a train roof): wrap back up to the top
-      if (p[i * 3 + 1] < -0.5 || this.sheltered(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])) p[i * 3 + 1] += TOP;
-      if (p[i * 3] - c.x > half) p[i * 3] -= AREA; else if (c.x - p[i * 3] > half) p[i * 3] += AREA;
-      if (p[i * 3 + 2] - c.z > half) p[i * 3 + 2] -= AREA; else if (c.z - p[i * 3 + 2] > half) p[i * 3 + 2] += AREA;
-    }
-    (this.snow.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-  }
 }

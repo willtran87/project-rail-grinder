@@ -14,7 +14,12 @@ export class GrindContact {
 
   // The glowing contact mesh
   private contactGlow: THREE.Mesh;
-  private contactLight: THREE.PointLight;
+  /**
+   * How brightly the contact point would light its surroundings. Not a real
+   * light: GrindEffects adds it into its one grind-area light (every real
+   * light costs something on every lit pixel of the whole scene).
+   */
+  readonly contactLight = { position: new THREE.Vector3(), intensity: 0 };
   private contactMaterial: THREE.MeshStandardMaterial;
 
   // Trail markers showing where you've ground
@@ -37,6 +42,7 @@ export class GrindContact {
       opacity: 0,
       flatShading: true,
       side: THREE.DoubleSide,
+      forceSinglePass: true, // see-through + double-sided: draw once, not back-then-front (same look; avoids a shader re-check each draw)
     });
     this.contactGlow = new THREE.Mesh(
       new THREE.CircleGeometry(0.3, 8),
@@ -45,10 +51,6 @@ export class GrindContact {
     this.contactGlow.rotation.x = -Math.PI / 2;
     this.group.add(this.contactGlow);
 
-    // Bright contact light
-    this.contactLight = new THREE.PointLight(0xff8833, 0, 8);
-    this.contactLight.position.y = 0.2;
-    this.group.add(this.contactLight);
 
     // Trail material - bright silver to show ground path
     this.trailMaterial = new THREE.MeshStandardMaterial({

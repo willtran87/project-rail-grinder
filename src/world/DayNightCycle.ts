@@ -352,7 +352,7 @@ export class DayNightCycle {
     const s = this.snowCover;
     if (s > 0.001) {
       if (this.groundMesh) {
-        (this.groundMesh.material as THREE.MeshStandardMaterial).color.lerp(SNOW_GROUND, 0.85 * s);
+        (this.groundMesh.material as THREE.MeshLambertMaterial).color.lerp(SNOW_GROUND, 0.85 * s);
       }
       sky.uGround.value.lerp(this._tmpColor.copy(SNOW_GROUND).multiplyScalar(0.6), 0.85 * s);
       // Snow catches the moonlight: snowy nights are noticeably brighter
@@ -390,7 +390,7 @@ export class DayNightCycle {
     this.renderer.toneMappingExposure += (p.exposure - this.renderer.toneMappingExposure) * t;
 
     if (this.groundMesh) {
-      (this.groundMesh.material as THREE.MeshStandardMaterial).color.lerp(p.groundColor, t);
+      (this.groundMesh.material as THREE.MeshLambertMaterial).color.lerp(p.groundColor, t);
     }
 
     if (this.post) {

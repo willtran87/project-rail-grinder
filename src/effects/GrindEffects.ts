@@ -46,7 +46,6 @@ export class GrindEffects {
 
     this.dust = new DustSystem();
     scene.add(this.dust.points);
-    scene.add(this.sparks.sparkLight);
 
     this.contact = new GrindContact();
     scene.add(this.contact.group);
@@ -67,7 +66,17 @@ export class GrindEffects {
     this.sparks.update(dt);
     this.dust.update(dt);
     this.contact.update(dt);
+    // The grind-area light also carries the spark and contact glow (they used
+    // to be two more lights in the same spot). Lower and stronger while they
+    // flare, so the rails and ballast under the stones still light up orange.
+    const flare = this.sparks.sparkLight.intensity + this.contact.contactLight.intensity;
+    const light = this.lights[1];
+    light.intensity = this.workIntensity + flare * 0.8;
+    light.position.y = this.workY - Math.min(1.5, flare * 0.15);
   }
+  /** Grind-area work light before the spark / contact glow is added */
+  private workIntensity = 0;
+  private workY = 0;
 
   /**
    * Section-complete celebration: little spark fountains rippling along both
@@ -117,8 +126,10 @@ export class GrindEffects {
       const tp = track.getTrackPoint(clamp(grinderPosition + LIGHT_OFFSETS[li]));
       this.lights[li].position.copy(tp.position);
       this.lights[li].position.y += 2.5;
-      this.lights[li].intensity = li === 0 ? 4
+      const intensity = li === 0 ? 4
         : grinding ? (avgPressure / 50) * (2.2 + Math.random() * 1.4) : 2.2;
+      if (li === 1) { this.workIntensity = intensity; this.workY = this.lights[li].position.y; }
+      else this.lights[li].intensity = intensity;
     }
 
     if (!grinding) {

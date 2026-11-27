@@ -173,6 +173,11 @@ export class Landmarks {
     }
     this.buildCrossings();
     this.bake();
+    // The moving parts (gates, lamps, blades) share materials with the baked
+    // parts, which receive shadows. Make them match: three.js compiles a
+    // material once per receive-shadow setting, and objects that disagree
+    // make it switch shader variants back and forth on every draw.
+    this.group.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.receiveShadow = true; });
   }
 
   // ------------------------------------------------------------------
@@ -481,6 +486,7 @@ export class Landmarks {
     this.beamMat = new THREE.MeshBasicMaterial({
       color: 0xfff2c0, transparent: true, opacity: 0, depthWrite: false,
       blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      forceSinglePass: true, // see-through + double-sided: draw once, not back-then-front (same look; avoids a shader re-check each draw)
     });
     const beamGeo = new THREE.ConeGeometry(3, 60, 16, 1, true);
     beamGeo.translate(0, -30, 0);

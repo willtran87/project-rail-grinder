@@ -131,15 +131,19 @@ The track has a 50m lead-in zone before game sections begin (`sectionOffset`). T
 
 ### Merged Meshes ("baking")
 Every separate mesh is a draw call, and another one for the shadow map. The grinder consist was built from ~4,000 small boxes, cylinders and spheres, which alone cost ~38 ms a frame. `core/bakeStatic.ts` merges all of a model's fixed parts into one mesh per material after it's built:
-- `RailGrinder`: each car is baked; the drop-down grind modules stay separate because they move.
+- `RailGrinder`: each car is baked. The 8 drop-down grind modules of each grinding car are merged into one piece that moves as a whole.
 - `PassingTrain`: each freight car is baked.
 - `Environment`: poles, signals, hills and mountains are baked; trees, bushes, rocks and grass are already instanced.
 - `Landmarks` uses its own version of the same idea.
 
-Parts smaller than ~35 cm, or thinner than ~6 cm (bolts, rivets, handrails), stop casting shadows while being merged; at the game's pixel resolution their shadows were under a pixel anyway. When you add detail to a model, keep sharing the `this.m.*` materials: every new material is another draw call after baking.
+Two options squeeze the grinder and freight cars further:
+- **`vertexMaterial`**: every "plain" material (a colour, metalness, roughness and fixed glow — no texture, not see-through) is merged into one shared material. Each vertex carries its old material's values instead (`createVertexPbrMaterial`), so a car painted in 15 colours is one draw call. Materials whose brightness changes while playing (headlights, beacons) are passed as `animated` and kept separate.
+- **`shadowProxy`**: everything that casts a shadow is also merged into one shadow-only mesh on `SHADOW_LAYER`. The sun's shadow camera sees that layer and the main camera doesn't, so each car's shadow costs one draw call.
+
+Parts smaller than ~35 cm, or thinner than ~6 cm (bolts, rivets, handrails), stop casting shadows while being merged; at the game's pixel resolution their shadows were under a pixel anyway.
 
 ### Batched Rails
-`RailBatch` draws all rail segments of a track as one mesh, plus one mesh for the polished running bands. Each vertex stores which segment it belongs to, and a small float texture holds each segment's colour, glow, metalness, roughness and band opacity, which the shader reads. `RailSegment` keeps the colour logic and writes its numbers into the batch. Grinding rewrites only that segment's vertices in the existing buffer, and only that slice is uploaded. Only segments that are cooling down or flashing are updated each frame (`RailTrack.updateSegments`).
+`RailBatch` draws all rail segments of a track as one mesh, plus one mesh for the polished running bands. Segments butt up against each other, so only the first and last segment of each rail have end faces (that halves the rail's triangles). Each vertex stores which segment it belongs to, and a small float texture holds each segment's colour, glow, metalness, roughness and band opacity, which the shader reads. `RailSegment` keeps the colour logic and writes its numbers into the batch. Grinding rewrites only that segment's vertices in the existing buffer, and only that slice is uploaded. Only segments that are cooling down or flashing are updated each frame (`RailTrack.updateSegments`).
 
 ### Shader Warm-up
 three.js compiles a material's shader the first time it's drawn. It also recompiles everything when the number of lights changes, or when shadows are switched on or off. That used to freeze the game for ~4 seconds on the first freight train and on the G key. Now:
@@ -204,30 +208,44 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 ### Graphics Quality
 `core/quality.ts` holds three presets; `Game.applyQuality()` applies them. G cycles them and the choice is saved.
 
-| Preset | Bloom | Shadows | Ground mist | Dust |
-|--------|-------|---------|-------------|------|
-| High   | on    | 1024²   | on          | 100% |
-| Medium | on    | 512²    | off         | 50%  |
-| Low    | off   | off     | off         | 25%  |
+| Preset | Bloom | Shadows | Ground mist | Dust | Frame rate |
+|--------|-------|---------|-------------|------|------------|
+| High   | on    | 1024²   | on          | 100% | screen's refresh rate |
+| Medium | on    | 512²    | off         | 50%  | max 60 fps |
+| Low    | off   | off     | off         | 25%  | max 60 fps |
+
+The 60 fps cap matters on high-refresh laptops: at 144 Hz the game would otherwise draw 2.4 times as many frames, for battery and fan noise.
 
 ## Performance Notes
 
-Measured in headless Chrome (RTX 3090, 1600×900) on Marias Pass:
+Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame rate; "pass 2" cut the GPU load (for weaker machines) and the garbage that causes stutters.
 
-| | Before | After |
-|---|---|---|
-| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) |
-| Renderer CPU per frame | 42.6 ms | ~4–5 ms |
-| Draw calls per frame | ~6,700 | ~380 |
-| Meshes in the scene | ~5,100 | ~360 |
-| First freight train | 4.7 s freeze | no freeze |
-| G key (shadows off) | 4 s freeze | ~40 ms |
+| | Original | Pass 1 | Pass 2 |
+|---|---|---|---|
+| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) | 16.7 ms |
+| Renderer CPU per frame | 42.6 ms | ~5 ms | ~2.6 ms |
+| GPU: scene / shadows (1080p) | — | 4.3 / 1.7 ms | 3.4 / 0.7 ms |
+| Draw calls per frame | ~6,700 | ~380 | ~145 |
+| Lights | 11 | 8 | 5 |
+| Garbage while grinding | — | ~24 MB/s | ~9 MB/s (driving ~5) |
+| First freight train | 4.7 s freeze | no freeze | no freeze |
+| G key (shadows off) | 4 s freeze | ~40 ms | ~40 ms |
 
 - **Target**: 60fps on modern hardware at 1080p
 - **Draw calls are the thing to watch.** The FPS counter (backtick) shows draw calls and triangles per frame. If it jumps after you add something, the new object probably needs to be baked, instanced or given a shared material.
-- **Light count**: 7 total (1 directional, 1 hemisphere, 2 work lights, 1 spark light, 1 contact glow, 1 headlight spot), plus the freight headlight (always present, 0 when idle). Every light costs something on every lit pixel, so prefer emissive materials and bloom for small glows.
-- **Shadows**: a 1024² map (High) covering 70 m just ahead of the camera.
+- **Lights**: 5 — sun, sky (hemisphere), the cab work light, one grind-area light and the headlight spot. Every light costs something on every lit pixel of the scene, even at brightness 0, so small glows are faked:
+  - the spark and contact glow add into the one grind-area light (`GrindEffects.update`);
+  - the freight's headlight is a soft additive pool of light on the ground (`PassingTrain.createHeadlightPool`).
+- **Shadows**: a 1024² map (High) covering 70 m just ahead of the camera. Most models cast through one shadow-only proxy each (see Merged Meshes).
+- **Materials**: fully rough scenery (trees, bushes, rocks, grass, the ground) uses the cheaper `MeshLambertMaterial` — same diffuse lighting, none of the specular maths (`Environment.toMatte`).
+- **Rendering pauses in menus**: in the job select, reports and the pause menu nothing on screen can change, so `Engine.renderHold` skips drawing and the browser keeps the last frame (0 draw calls). A window resize forces one fresh frame.
+- **Render resolution**: about 540 rows on every screen. Game pixels are 2 screen pixels up to ~1080p, 3 at 1440p and 4 at 4K (`pixelScaleFor`). That keeps the same chunky look everywhere and stops 4K costing four times as much.
+- **Rain and snow** are animated in the vertex shader from a fixed random seed per drop (`Weather.patchMaterial`): no per-frame CPU work or uploads, and they still stop at the train roofs.
+- **Sparks and dust** keep a free list and skip all work (and drawing) while nothing is flying.
+- **Garbage**: `RailProfile.compare()` writes into one reused result. The title screen's animation stops once the game starts (it used to keep drawing all game long). The remaining few MB/s is mostly three.js's own uniform caches, which grows with the number of draw calls.
+- **Shader variants**: three.js compiles one shader per material *setting*, so a material shared by objects that differ (instanced vs not, shadow-receiving vs not) or that is see-through and double-sided (drawn twice, back then front) makes it re-check every draw. The see-through double-sided materials use `forceSinglePass`, and the landmarks' moving parts receive shadows like their baked parts.
 - **Depth buffer**: a normal depth buffer (near 0.5 m, far 800 m is plenty). The logarithmic one stopped the GPU skipping hidden pixels early.
 - **Bloom**: 3 blur levels instead of three.js's 5; the two widest were only a few pixels at this resolution.
-- **2D overlays**: the profile displays and track map redraw only when something changes, and at 30 fps while something on them is pulsing. HUD text is only written when its value changes.
+- **2D overlays**: the profile displays and track map redraw only when something visible changes (the track map ignores progress changes smaller than a pixel), and at 30 fps while something on them is pulsing. The coloured profile line is drawn as one path per colour. HUD text is only written when its value changes.
+- **Bundle**: three.js is already tree-shaken (unused parts such as loaders, animation and raycasting are left out). What remains is the WebGL renderer and its shader code.
 - **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)

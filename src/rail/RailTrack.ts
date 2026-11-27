@@ -261,7 +261,7 @@ export class RailTrack {
     }
 
     const pointCount = new RailProfile().points.length;
-    this.batch = new RailBatch(transforms, VISUAL_SEGMENT_LENGTH, pointCount, getGrindMarkTexture());
+    this.batch = new RailBatch(transforms, VISUAL_SEGMENT_LENGTH, pointCount, getGrindMarkTexture(), this.segmentCount);
     const activate = (seg: RailSegment) => this.activeSegments.add(seg);
     for (let i = 0; i < this.segmentCount; i++) {
       const lp = new RailProfile(), rp = new RailProfile();

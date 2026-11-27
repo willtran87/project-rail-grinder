@@ -147,3 +147,113 @@ describe('batched rails', () => {
     expect(seg.update(0.1)).toBe(false);
   });
 });
+
+describe('bakeStatic: shared vertex material and shadow proxy', () => {
+  function car() {
+    const root = new THREE.Group();
+    const red = new THREE.MeshStandardMaterial({ color: 0xff0000, metalness: 0.3, roughness: 0.4 });
+    const grey = new THREE.MeshStandardMaterial({ color: 0x808080, emissive: 0x112233, emissiveIntensity: 2 });
+    const lamp = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffff00 });
+    const glass = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.5 });
+    const add = (m: THREE.Material, x: number, size = 1) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), m);
+      mesh.position.x = x; mesh.castShadow = true; root.add(mesh); return mesh;
+    };
+    add(red, 0); add(grey, 2); add(lamp, 4); add(glass, 6); add(red, 8, 0.05);
+    return { root, red, grey, lamp, glass };
+  }
+
+  it('plain materials merge into one mesh that carries each part\'s colour, glow, metalness and roughness', async () => {
+    const { createVertexPbrMaterial } = await import('./bakeStatic');
+    const { root, lamp, glass } = car();
+    const vmat = createVertexPbrMaterial();
+    bakeStatic(root, { vertexMaterial: vmat, animated: new Set([lamp]) });
+    const byMat = (m: THREE.Material) => root.children.filter((c) => (c as THREE.Mesh).material === m);
+    expect(byMat(vmat).length).toBe(2);   // red + grey together (casting / tiny non-casting)
+    expect(byMat(lamp).length).toBe(1);   // animated: kept
+    expect(byMat(glass).length).toBe(1);  // see-through: kept
+    const big = byMat(vmat).find((c) => c.castShadow) as THREE.Mesh;
+    const col = big.geometry.getAttribute('color');
+    const emi = big.geometry.getAttribute('aEmissive');
+    const pbr = big.geometry.getAttribute('aPbr');
+    const red = new THREE.Color(0xff0000), grey = new THREE.Color(0x808080);
+    const greyGlow = new THREE.Color(0x112233).multiplyScalar(2);
+    let sawRed = false, sawGrey = false;
+    for (let i = 0; i < col.count; i++) {
+      if (Math.abs(col.getX(i) - red.r) < 1e-6 && Math.abs(col.getY(i) - red.g) < 1e-6) {
+        sawRed = true;
+        expect(pbr.getX(i)).toBeCloseTo(0.3, 6); expect(pbr.getY(i)).toBeCloseTo(0.4, 6);
+        expect(emi.getX(i)).toBe(0);
+      } else if (Math.abs(col.getX(i) - grey.r) < 1e-6) {
+        sawGrey = true;
+        expect(emi.getZ(i)).toBeCloseTo(greyGlow.b, 6);
+      }
+    }
+    expect(sawRed && sawGrey).toBe(true);
+  });
+
+  it('a shadow proxy casts every shadow from one hidden mesh', async () => {
+    const { SHADOW_LAYER } = await import('./bakeStatic');
+    const { root } = car();
+    bakeStatic(root, { shadowProxy: true });
+    const casters = root.children.filter((c) => c.castShadow);
+    expect(casters.length).toBe(1);
+    const proxy = casters[0] as THREE.Mesh;
+    expect(proxy.layers.isEnabled(0)).toBe(false);          // main camera can't see it
+    expect(proxy.layers.isEnabled(SHADOW_LAYER)).toBe(true); // shadow camera can
+    // 4 big boxes cast (the 5 cm one is too small): 4 × 24 vertices
+    expect(proxy.geometry.getAttribute('position').count).toBe(4 * 24);
+  });
+});
+
+describe('rail end faces', () => {
+  it('only the first and last segment of each rail get end faces', () => {
+    const track = new RailTrack(
+      [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 100), new THREE.Vector3(0, 0, 200)],
+      undefined, 5, 20,
+    );
+    const rail = track.group.children.find((c) => (c as THREE.Mesh).castShadow && !(c as THREE.InstancedMesh).isInstancedMesh) as THREE.Mesh;
+    const indices = rail.geometry.index!.count;
+    const slots = track.segmentCount * 2;
+    const perSlotVerts = rail.geometry.getAttribute('position').count / slots;
+    const outline = perSlotVerts / 6;            // 4 side + 2 cap vertices per outline point
+    const sides = slots * outline * 6;           // 2 triangles per side quad
+    const capTris = (indices - sides) / 3;
+    // 2 rails × 2 ends get a cap (about outline - 2 triangles each; the
+    // triangulator skips zero-area ones), instead of 2 caps on every segment
+    expect(capTris % 4).toBe(0);
+    expect(capTris / 4).toBeGreaterThan(outline - 10);
+    expect(capTris / 4).toBeLessThanOrEqual(outline - 2);
+  });
+});
+
+describe('render resolution', () => {
+  it('keeps about 540 rows with whole-number pixels', async () => {
+    const { pixelScaleFor } = await import('./Engine');
+    expect(pixelScaleFor(720)).toBe(2);
+    expect(pixelScaleFor(1080)).toBe(2);
+    expect(pixelScaleFor(1440)).toBe(3);
+    expect(pixelScaleFor(2160)).toBe(4);
+  });
+});
+
+describe('sparks', () => {
+  it('dead sparks are reused, and an idle system skips its work', async () => {
+    const { SparkSystem } = await import('../effects/SparkSystem');
+    const sparks = new SparkSystem();
+    const pos = sparks.streaks.geometry.getAttribute('position') as THREE.BufferAttribute;
+    sparks.burst(new THREE.Vector3(), 50);
+    sparks.update(1 / 60);
+    expect(sparks.streaks.visible).toBe(true);
+    for (let i = 0; i < 300; i++) sparks.update(1 / 60); // all burn out
+    const v = pos.version;
+    sparks.update(1 / 60);
+    expect(pos.version).toBe(v);          // no upload while idle
+    expect(sparks.streaks.visible).toBe(false);
+    sparks.burst(new THREE.Vector3(), 800); // all 800 slots free again
+    sparks.update(1 / 60);
+    let alive = 0;
+    for (let i = 0; i < pos.count; i += 2) if (pos.getY(i) > -50) alive++;
+    expect(alive).toBe(800);
+  });
+});

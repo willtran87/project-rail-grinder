@@ -7,6 +7,15 @@
  * Merging every mesh that shares a material into one geometry turns that into
  * one draw call per material, and looks exactly the same.
  *
+ * Two optional extras squeeze it further:
+ *   - `vertexMaterial`: plain materials (a colour, metalness, roughness and a
+ *     fixed glow — no texture, not see-through) are all merged into ONE mesh.
+ *     Each vertex carries its old material's values instead (see
+ *     createVertexPbrMaterial), so a car with 15 paint colours is 1 draw call.
+ *   - `shadowProxy`: every part that casts a shadow is also merged into one
+ *     invisible, shadow-only mesh (layer SHADOW_LAYER), so the shadow map
+ *     needs one draw call per model instead of one per material.
+ *
  * Parts that move on their own (like the grinder's drop-down stone modules)
  * are passed in `keep` and left alone. Lights and other non-mesh children are
  * never touched.
@@ -19,6 +28,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+/**
+ * Objects on this layer are drawn only into the shadow map: the sun's shadow
+ * camera sees layer 0 and this one, the main camera only layer 0 (Engine).
+ */
+export const SHADOW_LAYER = 1;
+
 export interface BakeOptions {
   /** Meshes to leave as they are (they move, or need their own material) */
   keep?: Set<THREE.Object3D>;
@@ -26,12 +41,22 @@ export interface BakeOptions {
   minShadowSize?: number;
   /** Rods/plates thinner than this (second-longest side, metres) cast no shadow */
   minShadowThickness?: number;
+  /**
+   * Merge all plain materials into this one (made by createVertexPbrMaterial).
+   * Materials in `animated` are left alone, because their values change at run time.
+   */
+  vertexMaterial?: THREE.MeshStandardMaterial;
+  /** Materials whose colour / glow is changed while playing (never merged into vertexMaterial) */
+  animated?: Set<THREE.Material>;
+  /** Cast shadows through one merged, shadow-only mesh instead of each part */
+  shadowProxy?: boolean;
 }
 
 const _rel = new THREE.Matrix4();
 const _inv = new THREE.Matrix4();
 const _box = new THREE.Box3();
 const _size = new THREE.Vector3();
+const _emissive = new THREE.Color();
 
 /**
  * Make a geometry mergeable with the others: same attributes (position,
@@ -56,6 +81,66 @@ function prepare(src: THREE.BufferGeometry, matrix: THREE.Matrix4): THREE.Buffer
   geo.applyMatrix4(matrix);
   return geo;
 }
+
+/** Can this material's look be stored per vertex? */
+function isPlain(m: THREE.Material, animated: Set<THREE.Material> | undefined): m is THREE.MeshStandardMaterial {
+  const s = m as THREE.MeshStandardMaterial;
+  return !!s.isMeshStandardMaterial && !(m as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial
+    && !animated?.has(m)
+    && !s.map && !s.roughnessMap && !s.metalnessMap && !s.normalMap && !s.emissiveMap
+    && !s.alphaMap && !s.aoMap && !s.lightMap && !s.envMap
+    && !s.transparent && s.opacity === 1 && !s.vertexColors
+    && s.side === THREE.FrontSide && !s.wireframe && !s.flatShading;
+}
+
+/** Bake the material's values into per-vertex attributes (for vertexMaterial) */
+function addMaterialAttributes(geo: THREE.BufferGeometry, m: THREE.MeshStandardMaterial): void {
+  const n = geo.getAttribute('position').count;
+  const color = new Float32Array(n * 3);
+  const emissive = new Float32Array(n * 3);
+  const pbr = new Float32Array(n * 2);
+  _emissive.copy(m.emissive).multiplyScalar(m.emissiveIntensity);
+  for (let i = 0; i < n; i++) {
+    color[i * 3] = m.color.r; color[i * 3 + 1] = m.color.g; color[i * 3 + 2] = m.color.b;
+    emissive[i * 3] = _emissive.r; emissive[i * 3 + 1] = _emissive.g; emissive[i * 3 + 2] = _emissive.b;
+    pbr[i * 2] = m.metalness; pbr[i * 2 + 1] = m.roughness;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(color, 3));
+  geo.setAttribute('aEmissive', new THREE.BufferAttribute(emissive, 3));
+  geo.setAttribute('aPbr', new THREE.BufferAttribute(pbr, 2));
+}
+
+/**
+ * A standard (PBR) material that takes its colour, glow, metalness and
+ * roughness from each vertex instead of from the material. Make one and share
+ * it between models so they all use the same compiled shader.
+ */
+export function createVertexPbrMaterial(): THREE.MeshStandardMaterial {
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, color: 0xffffff });
+  mat.customProgramCacheKey = () => 'vertex-pbr';
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = `
+      attribute vec3 aEmissive;
+      attribute vec2 aPbr;
+      varying vec3 vEmissive;
+      varying vec2 vPbr;
+    ` + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      vEmissive = aEmissive;
+      vPbr = aPbr;
+    `);
+    shader.fragmentShader = `
+      varying vec3 vEmissive;
+      varying vec2 vPbr;
+    ` + shader.fragmentShader
+      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = vEmissive;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPbr.x;')
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPbr.y;');
+  };
+  return mat;
+}
+
+/** Material for shadow-only meshes (never drawn on screen; see SHADOW_LAYER) */
+let shadowOnlyMaterial: THREE.MeshBasicMaterial | null = null;
 
 /**
  * Merge the static meshes under `root` (one mesh per material and shadow
@@ -83,8 +168,11 @@ export function bakeStatic(root: THREE.Object3D, opts: BakeOptions = {}): number
   };
   for (const c of root.children) walk(c);
 
-  // Group by material + whether the part is big enough to cast a shadow
-  const batches = new Map<string, { material: THREE.Material; cast: boolean; receive: boolean; geos: THREE.BufferGeometry[] }>();
+  // Group by material + whether the part casts a shadow (a shadow proxy
+  // takes over all shadows, so then the batches don't need splitting)
+  type Batch = { material: THREE.Material; cast: boolean; receive: boolean; geos: THREE.BufferGeometry[] };
+  const batches = new Map<string, Batch>();
+  const shadowGeos: THREE.BufferGeometry[] = [];
   const usedGeos = new Set<THREE.BufferGeometry>();
   for (const mesh of found) {
     _rel.multiplyMatrices(_inv, mesh.matrixWorld);
@@ -98,7 +186,19 @@ export function bakeStatic(root: THREE.Object3D, opts: BakeOptions = {}): number
       const dims = [_size.x, _size.y, _size.z].sort((a, b) => b - a);
       if (dims[0] < minSize || dims[1] < minThick) cast = false;
     }
-    const material = mesh.material as THREE.Material;
+    if (cast && opts.shadowProxy) {
+      const s = new THREE.BufferGeometry();
+      s.setAttribute('position', geo.getAttribute('position').clone());
+      s.setIndex(geo.index!.clone());
+      shadowGeos.push(s);
+      cast = false;
+    }
+
+    let material = mesh.material as THREE.Material;
+    if (opts.vertexMaterial && isPlain(material, opts.animated)) {
+      addMaterialAttributes(geo, material);
+      material = opts.vertexMaterial;
+    }
     const key = `${material.uuid}|${cast}|${mesh.receiveShadow}`;
     let b = batches.get(key);
     if (!b) { b = { material, cast, receive: mesh.receiveShadow, geos: [] }; batches.set(key, b); }
@@ -121,6 +221,20 @@ export function bakeStatic(root: THREE.Object3D, opts: BakeOptions = {}): number
     mesh.castShadow = b.cast;
     mesh.receiveShadow = b.receive;
     root.add(mesh);
+  }
+
+  // One shadow-only mesh for everything that casts a shadow
+  if (shadowGeos.length) {
+    const merged = mergeGeometries(shadowGeos, false);
+    for (const g of shadowGeos) g.dispose();
+    if (merged) {
+      shadowOnlyMaterial ??= new THREE.MeshBasicMaterial();
+      const proxy = new THREE.Mesh(merged, shadowOnlyMaterial);
+      proxy.name = 'shadow-proxy';
+      proxy.castShadow = true;
+      proxy.layers.set(SHADOW_LAYER); // invisible to the main camera
+      root.add(proxy);
+    }
   }
   return found.length;
 }

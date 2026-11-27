@@ -28,6 +28,17 @@ export class RailProfile {
   surfaceFinish: number;
   metalRemoved: number;
   temperature: number;
+  /**
+   * Goes up by one every time the points change. Anything that remembers a
+   * result worked out from this profile (compare(), the profile display)
+   * checks it to know when to work it out again.
+   * If you change `points` directly, call markChanged() afterwards.
+   */
+  version = 0;
+
+  // compare() writes into this one object instead of building a new one
+  // (and a new 149-number array) on each of its ~20 calls a frame
+  private cmpResult: ProfileDeviation = { averageDeviation: 0, maxDeviation: 0, pointDeviations: [], withinTolerance: 0 };
 
   constructor(points?: ProfilePoint[]) {
     this.points = points ?? RailProfile.createAREMA136RE();
@@ -133,26 +144,41 @@ export class RailProfile {
       }
     }
 
+    this.version++;
     // Update surface finish based on uniformity of removal
     this.updateSurfaceFinish();
+  }
+
+  /** Call after changing `points` directly (see `version`) */
+  markChanged(): void {
+    this.version++;
   }
 
   /**
    * Compare this profile against a target profile.
    * Returns deviation metrics used for grading.
    */
+  /**
+   * How far this profile is from the target, point by point.
+   * The same result object is reused by every call on this profile (no
+   * garbage): read it straight away, don't change it or keep it.
+   */
   compare(target: TargetProfile): ProfileDeviation {
-    const deviations: number[] = [];
+    // Fixed-size array, written by index (setting length to 0 and pushing
+    // again would make the JS engine reallocate its storage every call)
+    const n = Math.min(this.points.length, target.points.length);
+    if (this.cmpResult.pointDeviations.length !== n) this.cmpResult.pointDeviations = new Array<number>(n).fill(0);
+    const deviations = this.cmpResult.pointDeviations;
     let totalDeviation = 0;
     let maxDev = 0;
     let withinCount = 0;
 
     // Compare at each point by matching x positions
-    for (let i = 0; i < this.points.length && i < target.points.length; i++) {
+    for (let i = 0; i < n; i++) {
       // Deviation: positive means current is too high (needs more grinding)
       // negative means over-ground (too much removed)
       const dev = target.points[i].y - this.points[i].y;
-      deviations.push(dev);
+      deviations[i] = dev;
 
       const absDev = Math.abs(dev);
       totalDeviation += absDev;
@@ -161,13 +187,11 @@ export class RailProfile {
     }
 
     const count = deviations.length || 1;
-
-    return {
-      averageDeviation: totalDeviation / count,
-      maxDeviation: maxDev,
-      pointDeviations: deviations,
-      withinTolerance: withinCount / count,
-    };
+    const r = this.cmpResult;
+    r.averageDeviation = totalDeviation / count;
+    r.maxDeviation = maxDev;
+    r.withinTolerance = withinCount / count;
+    return r;
   }
 
   /**

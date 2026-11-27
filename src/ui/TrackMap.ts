@@ -65,8 +65,22 @@ export class TrackMap {
   /** Update a segment's status */
   updateSegment(index: number, status: Partial<SegmentStatus>): void {
     if (index < 0 || index >= this.segments.length) return;
-    Object.assign(this.segments[index], status);
-    this.dirty = true;
+    const seg = this.segments[index];
+    const before = this.visualKey(seg);
+    Object.assign(seg, status);
+    // While grinding this is called every frame with tiny progress changes;
+    // only redraw when the bar would actually look different
+    if (this.visualKey(seg) !== before) this.dirty = true;
+  }
+
+  /** Everything about a section's bar that shows on screen, as one string */
+  private visualKey(seg: SegmentStatus): string {
+    const segW = (this.canvas.width - 40) / Math.max(1, this.segments.length);
+    const progressPx = Math.round((segW - 2) * seg.grindProgress);
+    const colorBand = seg.completed ? 'done'
+      : seg.grindProgress > 0.01 ? (seg.accuracy > 0.8 ? 'g' : seg.accuracy > 0.5 ? 'm' : 'p')
+      : (seg.defectSeverity > 0.7 ? 's' : seg.defectSeverity > 0.4 ? 'o' : seg.defectSeverity > 0.1 ? 'l' : 'n');
+    return `${colorBand}|${progressPx}|${seg.completed}|${seg.slowOrder}`;
   }
 
   /** Update grinder position (0-1 along track) */

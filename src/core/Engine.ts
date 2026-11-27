@@ -9,10 +9,22 @@
 
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SHADOW_LAYER } from './bakeStatic';
 
 /** How many times to divide the screen resolution for the pixel look.
  *  3 = each "pixel" is 3x3 screen pixels. Adjust for more/less chunky. */
-const PIXEL_SCALE = 2; // mild pixelation — detail readable but stylized
+/**
+ * How many screen pixels make one game pixel. At least 2 (mild pixelation,
+ * detail readable but stylized); on big screens it grows in whole steps so the
+ * game always renders about TARGET_ROWS rows: 1080p → 2, 1440p → 3, 4K → 4.
+ * That keeps the same chunky look on every screen and stops a 4K monitor
+ * costing four times as much to draw. (Whole numbers only: an uneven scale
+ * would make some pixels wider than others.)
+ */
+const TARGET_ROWS = 540;
+export function pixelScaleFor(screenHeight: number): number {
+  return Math.max(2, Math.round(screenHeight / TARGET_ROWS));
+}
 
 /** Half the width of the sun's shadow box (metres) */
 const SHADOW_HALF_SIZE = 35;
@@ -94,6 +106,14 @@ export class Engine {
     return new Promise((resolve) => { this.pendingCapture = resolve; });
   }
 
+  /**
+   * Most frames per second to run (0 = as many as the screen shows).
+   * Set from the graphics quality preset.
+   */
+  fpsCap = 0;
+  /** When the next frame is due (ms, requestAnimationFrame clock) */
+  private nextFrameAt = 0;
+
   /** Turn bloom off on slow machines (a future graphics-quality setting) */
   bloomEnabled = true;
   /** Colour grade uniforms. Tuned per time of day by DayNightCycle. */
@@ -149,9 +169,10 @@ export class Engine {
     };
 
     // --- Pixel art render target ---
-    // Render at 1/PIXEL_SCALE resolution, then stretch to fill screen
-    const lowW = Math.floor(window.innerWidth / PIXEL_SCALE);
-    const lowH = Math.floor(window.innerHeight / PIXEL_SCALE);
+    // Render at 1/scale resolution, then stretch to fill screen
+    const scale0 = pixelScaleFor(window.innerHeight);
+    const lowW = Math.floor(window.innerWidth / scale0);
+    const lowH = Math.floor(window.innerHeight / scale0);
 
     // HalfFloat (not 8-bit) so colours brighter than white survive until tone
     // mapping — that's what lets sparks and the sun glow instead of clipping.
@@ -210,6 +231,8 @@ export class Engine {
     this.directionalLight.shadow.camera.bottom = -SHADOW_HALF_SIZE;
     this.directionalLight.shadow.bias = -0.002;
     this.directionalLight.shadow.normalBias = 0.02;
+    // The shadow map also draws the shadow-only proxy meshes (see bakeStatic)
+    this.directionalLight.shadow.camera.layers.enable(SHADOW_LAYER);
     this.scene.add(this.directionalLight);
 
     // Handle window resize
@@ -237,6 +260,15 @@ export class Engine {
     factors[BLOOM_LEVELS - 1] += dropped;
     bloom.nMips = BLOOM_LEVELS;
   }
+
+  /**
+   * Return true when nothing on screen can change (pause menu, job select,
+   * reports): the 3D scene is then not drawn at all and the browser keeps
+   * showing the last frame. Saves the whole GPU cost while in menus.
+   */
+  renderHold: () => boolean = () => false;
+  /** Draw the next frame even if held (the canvas was cleared by a resize) */
+  private forceFrame = true;
 
   /** True while shaders are being compiled in the background (see prewarm) */
   private compiling = false;
@@ -272,13 +304,25 @@ export class Engine {
     if (idx !== -1) this.updateCallbacks.splice(idx, 1);
   }
 
-  private animate(): void {
+  private animate(time: number): void {
+    // Frame cap: skip screen refreshes until the next frame is due. The due
+    // time advances in fixed steps, so a 144 Hz screen averages a true 60 fps
+    // (alternating 2 and 3 refreshes) instead of dropping to 48.
+    if (this.fpsCap > 0) {
+      const interval = 1000 / this.fpsCap;
+      if (time < this.nextFrameAt - 1) return;
+      this.nextFrameAt = Math.max(this.nextFrameAt + interval, time - interval);
+    }
     const dt = this.clock.getDelta();
 
     // Call all registered update functions
     for (const cb of this.updateCallbacks) {
       cb(dt);
     }
+
+    // Nothing can change (menus, pause): keep the last frame, draw nothing
+    if (this.renderHold() && !this.forceFrame && !this.pendingCapture) return;
+    this.forceFrame = false;
 
     // Shaders still compiling in the background: keep showing the last frame
     if (this.compiling) {
@@ -316,13 +360,15 @@ export class Engine {
     const w = window.innerWidth;
     const h = window.innerHeight;
 
+    this.forceFrame = true; // resizing clears the canvas: draw one fresh frame
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
 
     // Resize the low-res render target too
-    const lowW = Math.floor(w / PIXEL_SCALE);
-    const lowH = Math.floor(h / PIXEL_SCALE);
+    const scale = pixelScaleFor(h);
+    const lowW = Math.floor(w / scale);
+    const lowH = Math.floor(h / scale);
     this.renderTarget.setSize(lowW, lowH);
     this.bloom.setSize(lowW, lowH);
   }

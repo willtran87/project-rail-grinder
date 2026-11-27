@@ -7,7 +7,7 @@
  */
 
 import * as THREE from 'three';
-import { bakeStatic } from '../core/bakeStatic';
+import { bakeStatic, createVertexPbrMaterial } from '../core/bakeStatic';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
 
@@ -29,6 +29,32 @@ export interface EnvironmentOptions {
 }
 
 const SNOW_WHITE = new THREE.Color(0xe6ecf2);
+
+/**
+ * A cheaper look-alike for a fully rough, non-metal standard material.
+ * MeshLambertMaterial does the same diffuse lighting (and fog, shadows,
+ * textures, flat shading) without the specular maths of MeshStandardMaterial,
+ * which only matters for shiny or metal surfaces. Anything else is returned
+ * unchanged. The same original always maps to the same copy.
+ */
+const matteCache = new WeakMap<THREE.Material, THREE.Material>();
+export function toMatte(m: THREE.Material): THREE.Material {
+  const s = m as THREE.MeshStandardMaterial;
+  if (!s.isMeshStandardMaterial || s.roughness < 0.85 || s.metalness > 0.05
+      || s.normalMap || s.roughnessMap || s.metalnessMap) return m;
+  const hit = matteCache.get(m);
+  if (hit) return hit;
+  const lambert = new THREE.MeshLambertMaterial({
+    color: s.color, map: s.map, emissive: s.emissive, emissiveIntensity: s.emissiveIntensity,
+    emissiveMap: s.emissiveMap, flatShading: s.flatShading, fog: s.fog, side: s.side,
+    transparent: s.transparent, opacity: s.opacity, vertexColors: s.vertexColors,
+    alphaTest: s.alphaTest, depthWrite: s.depthWrite,
+  });
+  lambert.name = s.name;
+  matteCache.set(m, lambert);
+  m.dispose();
+  return lambert;
+}
 
 export class Environment {
   readonly group: THREE.Group;
@@ -59,9 +85,15 @@ export class Environment {
     this.addDistantMountains();
     // (stars now come from the SkyDome shader, which fades them in only at night)
     if (options.snow) this.applySnow(options.snow);
+    // Thousands of trees, bushes, rocks and grass tufts: shade them with the
+    // cheaper matte material (they're fully rough, so it looks the same)
+    this.group.traverse((o) => {
+      const inst = o as THREE.InstancedMesh;
+      if (inst.isInstancedMesh) inst.material = toMatte(inst.material as THREE.Material);
+    });
     // Hundreds of one-off poles, signs, hills and mountains never move:
     // merge them into one mesh per material (instanced trees etc. are skipped)
-    bakeStatic(this.group);
+    bakeStatic(this.group, { vertexMaterial: createVertexPbrMaterial() });
   }
 
   /**

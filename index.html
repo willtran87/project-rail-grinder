@@ -166,7 +166,11 @@
 
           const originX = w * 0.5, originY = h * 0.72;
 
+          const title = document.getElementById('title-screen');
           function draw() {
+            // Title screen gone (game started): stop the animation for good and
+            // free the full-screen canvas (it used to keep drawing all game long)
+            if (title.style.display === 'none') { c.width = c.height = 0; return; }
             // Deep dark sky
             const sk = x.createLinearGradient(0, 0, 0, h);
             sk.addColorStop(0, '#040412'); sk.addColorStop(0.4, '#0a0820');

@@ -54,6 +54,8 @@ export class RailBatch {
   readonly shineMaterial: THREE.MeshStandardMaterial;
 
   private readonly slots: number;
+  /** Slots in one continuous rail (only its first / last segment needs end faces) */
+  private readonly slotsPerRail: number;
   private readonly length: number;
   /** Cross-section outline vertex count (fixed for every segment) */
   private readonly outline: number;
@@ -80,7 +82,8 @@ export class RailBatch {
    * @param shineMap - texture for the running band (null in tests)
    */
   constructor(transforms: THREE.Matrix4[], length: number, pointCount: number,
-              shineMap: THREE.Texture | null) {
+              shineMap: THREE.Texture | null, slotsPerRail = transforms.length) {
+    this.slotsPerRail = slotsPerRail;
     this.slots = transforms.length;
     this.length = length;
     const headPts = Math.floor((pointCount - 1) / PROFILE_STEP) + 1 + ((pointCount - 1) % PROFILE_STEP ? 1 : 0);
@@ -253,12 +256,18 @@ export class RailBatch {
    * triangles per quad; the caps are triangulated once from the standard
    * (unground) cross-section — grinding only moves the head a few mm, which
    * never changes which triangles make up the cap.
+   * Segments butt up against each other, so end faces ("caps") are only
+   * drawn at the two ends of each rail: that halves the rail's triangles.
    */
   private buildIndex(pointCount: number): THREE.BufferAttribute {
     const n = this.outline;
     const { tris: capTris, ccw } = this.capTriangles(pointCount);
-    const perSlot = n * 6 + capTris.length * 2;
-    const total = this.slots * perSlot;
+    const isFirst = (s: number) => s % this.slotsPerRail === 0;
+    const isLast = (s: number) => s % this.slotsPerRail === this.slotsPerRail - 1;
+    let total = 0;
+    for (let s = 0; s < this.slots; s++) {
+      total += n * 6 + (isFirst(s) ? capTris.length : 0) + (isLast(s) ? capTris.length : 0);
+    }
     const vTotal = this.slots * this.vertsPerSlot;
     const idx = vTotal > 65535 ? new Uint32Array(total) : new Uint16Array(total);
     let k = 0;
@@ -277,9 +286,11 @@ export class RailBatch {
         }
       }
       const c0 = b + n * 4, c1 = b + n * 5;
-      for (let t = 0; t < capTris.length; t += 3) {
-        // front cap faces -z, back cap +z: opposite windings
+      // front cap faces -z, back cap +z: opposite windings
+      if (isFirst(s)) for (let t = 0; t < capTris.length; t += 3) {
         idx[k++] = c0 + capTris[t]; idx[k++] = c0 + capTris[t + 2]; idx[k++] = c0 + capTris[t + 1];
+      }
+      if (isLast(s)) for (let t = 0; t < capTris.length; t += 3) {
         idx[k++] = c1 + capTris[t]; idx[k++] = c1 + capTris[t + 1]; idx[k++] = c1 + capTris[t + 2];
       }
     }

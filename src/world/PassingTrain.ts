@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
-import { bakeStatic } from '../core/bakeStatic';
+import { bakeStatic, createVertexPbrMaterial } from '../core/bakeStatic';
 
 const ADJACENT_OFFSET = 5; // meters to the side
 const GAUGE_HALF = 0.8;
@@ -58,8 +58,9 @@ export class PassingTrain {
   private track: RailTrack | null = null;
   private totalLength = 300;
 
-  private headlight: THREE.PointLight;
-  private static readonly HEADLIGHT_LOCAL = new THREE.Vector3(0, 3.0, 10);
+  /** Pool of headlight on the ground ahead of the locomotive (brighter at night) */
+  private headlightPool: THREE.Mesh;
+  private vertexMat = createVertexPbrMaterial();
 
   /** Individual car groups for articulated curve following */
   private cars: { group: THREE.Group; offset: number; halfLen: number }[] = [];
@@ -89,7 +90,9 @@ export class PassingTrain {
     };
 
     const addCar = (g: THREE.Group, offset: number, halfLen: number) => {
-      bakeStatic(g); // a car's parts never move relative to each other: merge them
+      // a car's parts never move relative to each other: merge them (one draw
+      // call for all plain colours, one shadow-only mesh)
+      bakeStatic(g, { vertexMaterial: this.vertexMat, shadowProxy: true });
       this.cars.push({ group: g, offset, halfLen });
       this.group.add(g);
     };
@@ -102,12 +105,6 @@ export class PassingTrain {
     cab.position.set(0, 4.1, -5); loco.add(cab);
     const hl = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), hlMat);
     hl.position.set(0, 3.0, 9.1); loco.add(hl);
-    // The headlight's real light lives outside the (often hidden) train group:
-    // a light that appears and disappears changes the scene's light count,
-    // which makes three.js recompile every material — a visible stutter.
-    // Instead it always exists and is simply turned down to 0 between passes.
-    this.headlight = new THREE.PointLight(0xffffff, 0, 35);
-    this.adjacentTrack.add(this.headlight);
     // Stripe
     const stripeMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.15, roughness: 0.5 });
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.05, 0.15, 18.05), stripeMat);
@@ -115,6 +112,11 @@ export class PassingTrain {
     loco.add(new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.15, 18), frameMat)).position.y = 0.6;
     addWheels(loco, 18);
     addCar(loco, 0, 9);
+    // Headlight on the ground: a soft pool of light ahead of the locomotive.
+    // (A real PointLight would cost something on every lit pixel of the whole
+    // scene all the time, even with the train out of sight; this is one quad.)
+    this.headlightPool = this.createHeadlightPool();
+    loco.add(this.headlightPool);
 
     // Freight cars
     const colors = [0xaa3333, 0x33aa33, 0x888833, 0x884422, 0x336688, 0x448844, 0x886644, 0x445588];
@@ -151,7 +153,48 @@ export class PassingTrain {
   }
   private _span = { front: 0, rear: 0, speed: 0 };
 
-  update(dt: number, grinderDist: number): void {
+  /**
+   * A soft oval of light on the ground ahead of the locomotive, drawn with
+   * additive blending so it brightens whatever is underneath (ballast, rails).
+   */
+  private createHeadlightPool(): THREE.Mesh {
+    const LENGTH = 30, WIDTH = 9;
+    const geo = new THREE.PlaneGeometry(WIDTH, LENGTH);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uStrength: { value: 0 }, uColor: { value: new THREE.Color(0xfff1d0) } },
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uStrength;
+        uniform vec3 uColor;
+        varying vec2 vUv;
+        void main() {
+          // brightest just ahead of the nose (v = 1), fading forward and to the sides
+          float along = vUv.y;
+          float across = abs(vUv.x - 0.5) * 2.0;
+          float spread = mix(0.35, 1.0, 1.0 - along);   // widens with distance
+          float side = smoothstep(1.0, 0.0, across / spread);
+          float fade = smoothstep(0.0, 0.85, along);
+          gl_FragColor = vec4(uColor * uStrength * side * fade, 1.0);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+    });
+    const pool = new THREE.Mesh(geo, mat);
+    // nose of the loco is at z = +9; the pool starts there and runs forward
+    pool.position.set(0, 0.05, 9 + LENGTH / 2); // just above the ties and ballast
+    pool.renderOrder = 2;
+    return pool;
+  }
+
+  update(dt: number, grinderDist: number, darkness = 0): void {
     if (!this.active) {
       this.timer += dt;
       if (this.timer >= this.nextEventIn) this.startPass(grinderDist);
@@ -192,15 +235,8 @@ export class PassingTrain {
         const up = this._tv3.crossVectors(fwd, right).normalize();
         car.group.quaternion.setFromRotationMatrix(this._tm.makeBasis(right, up, fwd));
       }
-      // Headlight follows the locomotive (the first car)
-      const loco = this.cars[0];
-      if (loco) {
-        this.headlight.intensity = loco.group.visible ? 4 : 0;
-        if (loco.group.visible) {
-          loco.group.updateMatrix();
-          this.headlight.position.copy(PassingTrain.HEADLIGHT_LOCAL).applyMatrix4(loco.group.matrix);
-        }
-      }
+      // Headlight pool: hardly visible by day, bright at night
+      (this.headlightPool.material as THREE.ShaderMaterial).uniforms.uStrength.value = 0.06 + darkness * 0.42;
     }
 
     if (!this.hornPlayed && this.position > grinderDist - 20) {
@@ -213,7 +249,6 @@ export class PassingTrain {
     if (this.position - 103 > this.totalLength) {
       this.active = false;
       this.group.visible = false;
-      this.headlight.intensity = 0;
       this.timer = 0;
       this.nextEventIn = 60 + Math.random() * 60;
     }

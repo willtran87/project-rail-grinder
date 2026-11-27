@@ -216,6 +216,7 @@ export class Game {
   private applyQuality(): void {
     const q = QUALITY_PRESETS[this.quality];
     this.engine.bloomEnabled = q.bloom;
+    this.engine.fpsCap = q.fpsCap;
     const sun = this.engine.directionalLight;
     sun.castShadow = q.shadowMapSize > 0;
     if (q.shadowMapSize > 0 && sun.shadow.mapSize.x !== q.shadowMapSize) {
@@ -408,6 +409,11 @@ export class Game {
 
     // Register update loop
     this.engine.onUpdate(this.update.bind(this));
+    // Only draw the 3D scene while it can actually change: during play, the
+    // inspection pass and photo mode. In menus, reports and the pause menu
+    // the world is frozen, so the last frame is simply kept on screen.
+    this.engine.renderHold = () => !(this.photoMode.active || this.inspectionPass
+      || (this.gameStarted && !this.jobComplete && !this.isPaused));
 
     // Init audio on first user interaction (use { once: true } to auto-cleanup)
     const initAudio = () => {
@@ -486,6 +492,7 @@ export class Game {
             point.y -= defect * variation;
           }
         }
+        profile.markChanged();
         this.track.rebuildSegment(vi, rail);
       }
     }
@@ -544,8 +551,10 @@ export class Game {
     // Grass by default; snowy routes swap in the snow texture (see buildWorld)
     this.grassGroundTexture = createGroundTexture();
     this.snowGroundTexture = createSnowGroundTexture();
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x4a6a3a, roughness: 0.95, metalness: 0.0,
+    // Matte (Lambert) shading: the ground is fully rough, so this looks the
+    // same as the standard material and is cheaper on the biggest surface in view
+    const groundMat = new THREE.MeshLambertMaterial({
+      color: 0x4a6a3a,
       map: this.grassGroundTexture,
     });
     this.ground = new THREE.Mesh(groundGeo, groundMat);
@@ -676,7 +685,7 @@ export class Game {
     }
 
     // Passing trains
-    this.passingTrain.update(dt, this.grinderPosition);
+    this.passingTrain.update(dt, this.grinderPosition, this.dayNight.darkness);
 
     // Radio dispatch
     this.radioDispatch.update(dt);
@@ -1013,12 +1022,12 @@ export class Game {
    */
   private worstZonesFor(profile: RailProfile): Array<{ centerX: number; severity: number }> {
     const cached = this._zoneCache.get(profile);
-    if (cached && cached.removed === profile.metalRemoved) return cached.zones;
+    if (cached && cached.version === profile.version) return cached.zones;
     const zones = profile.findWorstZones(this.targetProfile, 3);
-    this._zoneCache.set(profile, { removed: profile.metalRemoved, zones });
+    this._zoneCache.set(profile, { version: profile.version, zones });
     return zones;
   }
-  private _zoneCache = new WeakMap<RailProfile, { removed: number; zones: Array<{ centerX: number; severity: number }> }>();
+  private _zoneCache = new WeakMap<RailProfile, { version: number; zones: Array<{ centerX: number; severity: number }> }>();
 
   /** Redraw both rail profile displays for the given visual segment */
   private drawProfiles(visualSegIndex: number, sectionIndex: number): void {
@@ -1339,7 +1348,7 @@ export class Game {
     this.weather.setRegion(job.region);
     this.audio.setRegion(job.region);
     this.dayNight.snowCover = this.weather.snowCover;
-    const groundMat = this.ground.material as THREE.MeshStandardMaterial;
+    const groundMat = this.ground.material as THREE.MeshLambertMaterial;
     const groundMap = this.weather.snowCover > 0.5 ? this.snowGroundTexture : this.grassGroundTexture;
     if (groundMat.map !== groundMap) { groundMat.map = groundMap; groundMat.needsUpdate = true; }
 
