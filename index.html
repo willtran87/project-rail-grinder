@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Staying on Track - Rail Grinding Simulator</title>
+    <link rel="icon" type="image/svg+xml" href="/project-rail-grinder/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
@@ -36,6 +37,23 @@
         background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.4) 100%);
       }
 
+      /* ---- Cinematic mode (inspection fly-by): hide the gameplay HUD ---- */
+      body.cinematic #top-bar,
+      body.cinematic #profile-container,
+      body.cinematic #track-map,
+      body.cinematic #radio-dispatch,
+      body.cinematic #deadline-bar { display: none !important; }
+
+      /* ---- Photo mode: hide everything except the scene and the photo hint ---- */
+      body.photo-mode #top-bar,
+      body.photo-mode #profile-container,
+      body.photo-mode #track-map,
+      body.photo-mode #radio-dispatch,
+      body.photo-mode #deadline-bar,
+      body.photo-mode #perf-overlay,
+      body.photo-mode #guided-tutorial,
+      body.photo-mode #floating-scores { display: none !important; }
+
       /* ---- TOP BAR: Speed + Status (compact) ---- */
       #top-bar {
         position: absolute; top: 0; left: 0; right: 0;
@@ -58,27 +76,6 @@
       #progress-pill { font-size: 11px; }
       #progress-pill .sections { color: #fff; font-weight: 600; }
       #progress-pill .accuracy { font-weight: 600; margin-left: 8px; }
-
-      /* ---- Tutorial ---- */
-      #tutorial-overlay {
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        pointer-events: none; z-index: 10;
-      }
-      .tutorial-box {
-        position: absolute; background: var(--ui-bg);
-        border: 1px solid var(--ui-accent); border-radius: 8px;
-        padding: 16px 20px; font-size: 12px; line-height: 1.8;
-        color: #fff; max-width: 400px; pointer-events: auto; z-index: 11;
-      }
-      .tutorial-box .tutorial-title { color: var(--ui-accent); font-weight: 700; font-size: 13px; display: block; margin-bottom: 6px; }
-      .tutorial-box .tutorial-text { color: var(--ui-text); display: block; margin-bottom: 8px; }
-      .tutorial-box .tutorial-hint { color: var(--ui-green); font-size: 10px; }
-      .tutorial-btn {
-        background: var(--ui-accent); color: #000; border: none;
-        font-family: var(--ui-font); font-size: 11px; font-weight: 600;
-        padding: 8px 20px; border-radius: 4px; cursor: pointer; margin-top: 6px;
-      }
-      .tutorial-btn:hover { filter: brightness(1.15); }
 
       /* ---- Profile SETUP mode (enlarged, centered) ---- */
       #profile-container.setup-mode {
@@ -135,7 +132,8 @@
         align-items: center; z-index: 30;
       }
     </style>
-    <script type="module" crossorigin src="/project-rail-grinder/assets/index-Fc7QMnQQ.js"></script>
+    <script type="module" crossorigin src="/project-rail-grinder/assets/index-DOgTAHSZ.js"></script>
+    <link rel="modulepreload" crossorigin href="/project-rail-grinder/assets/three-BkGJxqjO.js">
   </head>
   <body>
     <!-- Title screen with procedural train art -->
@@ -312,7 +310,7 @@
       <!-- Left rail -->
       <div style="text-align: center;">
         <div id="left-rail-label" style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); letter-spacing: 1px; margin-bottom: 1px;">LEFT RAIL</div>
-        <canvas id="profile-left" width="360" height="190" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 6px 0 0 0;"></canvas>
+        <canvas id="profile-left" width="300" height="150" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 6px 0 0 0;"></canvas>
         <div style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-top: none; border-radius: 0 0 0 6px; padding: 3px 10px; display: flex; gap: 10px; justify-content: center; font-family: var(--ui-mono); font-size: 10px;">
           <span style="color: var(--ui-dim); font-size: 7px;">ANG</span><span id="angle-value" style="color: #fff; font-weight: 700;">0&deg;</span>
           <span style="color: var(--ui-dim); font-size: 7px;">PSI</span><span id="pressure-value" style="color: #fff; font-weight: 700;">50%</span>
@@ -321,7 +319,7 @@
       <!-- Center: heat -->
       <div style="background: var(--ui-bg); border-top: 1px solid var(--ui-border); border-bottom: 1px solid var(--ui-border); padding: 4px 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 32px;">
         <div style="font-family: var(--ui-mono); font-size: 6px; color: var(--ui-dim); letter-spacing: 1px;">HEAT</div>
-        <div style="width: 6px; height: 70px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative; overflow: hidden;">
+        <div style="width: 6px; height: 56px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative; overflow: hidden;">
           <div id="heat-fill" style="position: absolute; bottom: 0; width: 100%; height: 0%; background: var(--ui-green); border-radius: 3px; transition: height 0.1s;"></div>
         </div>
         <div id="heat-value" style="font-family: var(--ui-mono); font-size: 8px; color: var(--ui-dim);">0%</div>
@@ -329,7 +327,7 @@
       <!-- Right rail -->
       <div style="text-align: center;">
         <div id="right-rail-label" style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); letter-spacing: 1px; margin-bottom: 1px;">RIGHT RAIL</div>
-        <canvas id="profile-right" width="360" height="190" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 0 6px 0 0;"></canvas>
+        <canvas id="profile-right" width="300" height="150" style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 0 6px 0 0;"></canvas>
         <div style="background: var(--ui-bg); border: 1px solid var(--ui-border); border-top: none; border-radius: 0 0 6px 0; padding: 3px 10px; display: flex; gap: 10px; justify-content: center; font-family: var(--ui-mono); font-size: 10px;">
           <span style="color: var(--ui-dim); font-size: 7px;">ANG</span><span id="angle-value-r" style="color: #fff; font-weight: 700;">0&deg;</span>
           <span style="color: var(--ui-dim); font-size: 7px;">PSI</span><span id="pressure-value-r" style="color: #fff; font-weight: 700;">50%</span>
@@ -383,11 +381,47 @@
             padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
           ">QUIT TO MENU</button>
         </div>
+
+        <!-- Controls reference -->
+        <div id="controls-ref" style="
+          margin-top: 28px; padding: 14px 20px; text-align: left;
+          background: rgba(14, 16, 22, 0.97); border: 1px solid var(--ui-border); border-radius: 6px;
+          font-family: var(--ui-mono); font-size: 10px; color: var(--ui-text); line-height: 1.9;
+          display: grid; grid-template-columns: auto auto; column-gap: 28px;
+        ">
+          <div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin-bottom: 4px;">DRIVE &amp; GRIND</div>
+            <div><kbd>W</kbd>/<kbd>S</kbd> forward / reverse</div>
+            <div><kbd>SPACE</kbd> hold to grind</div>
+            <div><kbd>SHIFT</kbd> fast travel</div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin: 8px 0 4px;">LEFT RAIL</div>
+            <div><kbd>Q</kbd>/<kbd>E</kbd> angle &nbsp; <kbd>A</kbd>/<kbd>D</kbd> pressure</div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin: 8px 0 4px;">RIGHT RAIL</div>
+            <div><kbd>U</kbd>/<kbd>O</kbd> angle &nbsp; <kbd>J</kbd>/<kbd>L</kbd> pressure</div>
+          </div>
+          <div>
+            <div style="color: var(--ui-accent); letter-spacing: 2px; margin-bottom: 4px;">VIEW &amp; OPTIONS</div>
+            <div><kbd>1</kbd>-<kbd>5</kbd> camera angles</div>
+            <div><kbd>N</kbd> skip to next time of day &nbsp; <kbd>P</kbd> rain / snow</div>
+            <div><kbd>M</kbd> mute</div>
+            <div><kbd>C</kbd> colour-blind palette</div>
+            <div><kbd>`</kbd> FPS counter</div>
+            <div><kbd>F</kbd> photo mode (<kbd>K</kbd> saves)</div>
+            <div><kbd>G</kbd> graphics quality</div>
+            <div><kbd>R</kbd> restart job &nbsp; <kbd>ESC</kbd> pause</div>
+          </div>
+        </div>
+        <style>
+          #controls-ref kbd {
+            display: inline-block; min-width: 14px; padding: 0 5px; text-align: center;
+            background: rgba(255,255,255,0.1); border-radius: 3px; color: var(--ui-accent);
+            font-family: var(--ui-mono); font-size: 10px;
+          }
+        </style>
       </div>
     </div>
 
     <!-- Overlays -->
-    <div id="tutorial-overlay"></div>
     <div id="tooltip"></div>
     <div id="results-screen"><div id="results-content"></div></div>
 

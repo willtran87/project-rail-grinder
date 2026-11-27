@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Rail cross-section: head, web, base — with a grinding spark -->
+  <rect width="32" height="32" rx="6" fill="#141820"/>
+  <path d="M9 7 Q9 5 11 5 H21 Q23 5 23 7 V11 Q23 12 21 12 H18.5 V21 L25 24 V27 H7 V24 L13.5 21 V12 H11 Q9 12 9 11 Z" fill="#e8a020"/>
+  <circle cx="16" cy="5" r="1.6" fill="#fff4c0"/>
+</svg>
