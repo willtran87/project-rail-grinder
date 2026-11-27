@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Staying on Track - Rail Grinding Simulator</title>
     <link rel="icon" type="image/svg+xml" href="/project-rail-grinder/favicon.svg" />
+    <!-- Fonts load without holding up the first paint: the stylesheet is
+         fetched as a preload and switched on when it arrives (text shows in a
+         fallback font for a moment, then swaps). Preconnecting to the font
+         file server too saves a round trip. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"></noscript>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       :root {
@@ -132,8 +138,8 @@
         align-items: center; z-index: 30;
       }
     </style>
-    <script type="module" crossorigin src="/project-rail-grinder/assets/index-CYIaZzZn.js"></script>
-    <link rel="modulepreload" crossorigin href="/project-rail-grinder/assets/three-BAoDF9YQ.js">
+    <script type="module" crossorigin src="/project-rail-grinder/assets/index-k_IWW7QW.js"></script>
+    <link rel="modulepreload" crossorigin href="/project-rail-grinder/assets/three-BDx_qV7e.js">
   </head>
   <body>
     <!-- Title screen with procedural train art -->
@@ -323,7 +329,8 @@
       <!-- Center: heat -->
       <div style="background: var(--ui-bg); border-top: 1px solid var(--ui-border); border-bottom: 1px solid var(--ui-border); padding: 4px 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 32px;">
         <div style="font-family: var(--ui-mono); font-size: 6px; color: var(--ui-dim); letter-spacing: 1px;">HEAT</div>
-        <div style="width: 6px; height: 56px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative; overflow: hidden;">
+        <!-- no overflow:hidden: the fill is rounded itself, and clipping it to a rounded box made the GPU build a new drawing pipeline (a ~0.2 s stall) the moment heat first showed -->
+        <div style="width: 6px; height: 56px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative;">
           <div id="heat-fill" style="position: absolute; bottom: 0; width: 100%; height: 0%; background: var(--ui-green); border-radius: 3px; transition: height 0.1s;"></div>
         </div>
         <div id="heat-value" style="font-family: var(--ui-mono); font-size: 8px; color: var(--ui-dim);">0%</div>
