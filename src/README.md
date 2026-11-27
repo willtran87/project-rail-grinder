@@ -134,7 +134,9 @@ Every separate mesh is a draw call, and another one for the shadow map. The grin
 - `RailGrinder`: each car is baked. The 8 drop-down grind modules of each grinding car are merged into one piece that moves as a whole.
 - `PassingTrain`: each freight car is baked.
 - `Environment`: poles, signals, hills and mountains are baked; trees, bushes, rocks and grass are already instanced.
-- `Landmarks` uses its own version of the same idea.
+- `Landmarks` uses its own version of the same idea, with the same shared per-vertex material for its plain colours.
+- `SlowOrderSigns`: all posts, yellow faces and green faces are three `InstancedMesh`es; a spinning board just rewrites its two instance matrices.
+- `GrindContact`: the "freshly ground" trail markers are one `InstancedMesh` reused as a ring of 100 slots (it used to add a new mesh every 2 m).
 
 Two options squeeze the grinder and freight cars further:
 - **`vertexMaterial`**: every "plain" material (a colour, metalness, roughness and fixed glow — no texture, not see-through) is merged into one shared material. Each vertex carries its old material's values instead (`createVertexPbrMaterial`), so a car painted in 15 colours is one draw call. Materials whose brightness changes while playing (headlights, beacons) are passed as `animated` and kept separate.
@@ -147,7 +149,9 @@ Parts smaller than ~35 cm, or thinner than ~6 cm (bolts, rivets, handrails), sto
 
 ### Shader Warm-up
 three.js compiles a material's shader the first time it's drawn. It also recompiles everything when the number of lights changes, or when shadows are switched on or off. That used to freeze the game for ~4 seconds on the first freight train and on the G key. Now:
-- `Engine.prewarm()` compiles everything in the background after a job loads and after G, holding the last frame meanwhile.
+- `Engine.prewarm()` compiles everything in the background at start-up, after a job loads and after G, holding the last frame meanwhile.
+- It then draws the whole scene once off screen with every hidden object switched on (`Engine.warmDraw`: sparks, dust, trail, freight, rain, snow). On Windows the browser finishes preparing a shader the first time it is actually drawn, so this avoids small stalls the first time each effect appears.
+- Anything added to the scene *during* play misses the warm-up, so effects are created up front and shown/hidden (or use instance counts) rather than created on demand.
 - The freight's headlight always exists and is turned to 0 when the train isn't passing, so the light count never changes during play.
 
 ### Pre-allocated Temp Objects
@@ -220,16 +224,19 @@ The 60 fps cap matters on high-refresh laptops: at 144 Hz the game would otherwi
 
 Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame rate; "pass 2" cut the GPU load (for weaker machines) and the garbage that causes stutters.
 
-| | Original | Pass 1 | Pass 2 |
-|---|---|---|---|
-| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) | 16.7 ms |
-| Renderer CPU per frame | 42.6 ms | ~5 ms | ~2.6 ms |
-| GPU: scene / shadows (1080p) | — | 4.3 / 1.7 ms | 3.4 / 0.7 ms |
-| Draw calls per frame | ~6,700 | ~380 | ~145 |
-| Lights | 11 | 8 | 5 |
-| Garbage while grinding | — | ~24 MB/s | ~9 MB/s (driving ~5) |
-| First freight train | 4.7 s freeze | no freeze | no freeze |
-| G key (shadows off) | 4 s freeze | ~40 ms | ~40 ms |
+| | Original | Pass 1 | Pass 2 | Pass 3 |
+|---|---|---|---|---|
+| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) | 16.7 ms | 16.7 ms |
+| Renderer CPU per frame | 42.6 ms | ~5 ms | ~2.6 ms | ~2.1 ms |
+| GPU: scene / shadows (1080p) | — | 4.3 / 1.7 ms | 3.4 / 0.7 ms | 1.75 / 0.55 ms |
+| Draw calls per frame | ~6,700 | ~380 | ~145 | ~108 |
+| Lights | 11 | 8 | 5 | 5 |
+| Garbage while grinding | — | ~24 MB/s | ~9 MB/s | ~8 MB/s |
+| Slow laptop (CPU ×4 slower): typical / 95th-percentile frame | — | — | 27.9 / 49 ms | 21.9 / 34 ms |
+| Click → job menu | — | — | ~1.05 s | ~0.15–0.5 s |
+| Stall when grinding first starts | — | — | ~0.2 s | none |
+| First freight train | 4.7 s freeze | no freeze | no freeze | no freeze |
+| G key (shadows off) | 4 s freeze | ~40 ms | ~40 ms | ~40–150 ms (held frame) |
 
 - **Target**: 60fps on modern hardware at 1080p
 - **Draw calls are the thing to watch.** The FPS counter (backtick) shows draw calls and triangles per frame. If it jumps after you add something, the new object probably needs to be baked, instanced or given a shared material.
@@ -247,5 +254,8 @@ Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame 
 - **Depth buffer**: a normal depth buffer (near 0.5 m, far 800 m is plenty). The logarithmic one stopped the GPU skipping hidden pixels early.
 - **Bloom**: 3 blur levels instead of three.js's 5; the two widest were only a few pixels at this resolution.
 - **2D overlays**: the profile displays and track map redraw only when something visible changes (the track map ignores progress changes smaller than a pixel), and at 30 fps while something on them is pulsing. The coloured profile line is drawn as one path per colour. HUD text is only written when its value changes.
+- **Start-up**: no world is built until a job is picked (the job menu covers everything), the grinder is built just after the menu appears (`Game.ensureGrinder`), and the game is set up *while* the title fades out (an opacity fade runs on the compositor, so it stays smooth). Click → job menu went from ~1.05 s to ~0.15–0.5 s. Google Fonts load without blocking the first paint.
+- **Page (HTML) stalls**: the browser's GPU also draws the HTML interface and 2D canvases, and the first time it draws a *new kind* of shape it builds a drawing pipeline (up to ~0.3 s). The heat bar used to be a rounded fill clipped by a rounded box — a combination nothing else on the page uses — which stalled the game ~0.4 s into the first grind. The fill is rounded itself now, with no clip. Floating score popups animate only `transform` and `opacity`, so their glow is painted once instead of every frame.
+- **Profile displays**: the plot's height range snaps to 0.5 mm steps, so the grid and its ~20 text labels are drawn once into an off-screen canvas and reused (canvas text was the biggest cost on slow laptops).
 - **Bundle**: three.js is already tree-shaken (unused parts such as loaders, animation and raycasting are left out). What remains is the WebGL renderer and its shader code.
 - **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)

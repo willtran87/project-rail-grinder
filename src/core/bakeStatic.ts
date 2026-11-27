@@ -83,7 +83,7 @@ function prepare(src: THREE.BufferGeometry, matrix: THREE.Matrix4): THREE.Buffer
 }
 
 /** Can this material's look be stored per vertex? */
-function isPlain(m: THREE.Material, animated: Set<THREE.Material> | undefined): m is THREE.MeshStandardMaterial {
+export function isPlain(m: THREE.Material, animated: Set<THREE.Material> | undefined): m is THREE.MeshStandardMaterial {
   const s = m as THREE.MeshStandardMaterial;
   return !!s.isMeshStandardMaterial && !(m as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial
     && !animated?.has(m)
@@ -94,7 +94,7 @@ function isPlain(m: THREE.Material, animated: Set<THREE.Material> | undefined): 
 }
 
 /** Bake the material's values into per-vertex attributes (for vertexMaterial) */
-function addMaterialAttributes(geo: THREE.BufferGeometry, m: THREE.MeshStandardMaterial): void {
+export function addMaterialAttributes(geo: THREE.BufferGeometry, m: THREE.MeshStandardMaterial): void {
   const n = geo.getAttribute('position').count;
   const color = new Float32Array(n * 3);
   const emissive = new Float32Array(n * 3);

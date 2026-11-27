@@ -290,7 +290,41 @@ export class Engine {
     this.renderer.setRenderTarget(previous);
     done
       .catch(() => { /* fall back to compiling on first draw */ })
+      .then(() => this.warmDraw())
       .finally(() => { this.compiling = false; });
+  }
+
+  /**
+   * Draw the whole scene once, off screen, with everything that is normally
+   * hidden switched on (sparks, dust, trail markers, the freight, rain, snow).
+   *
+   * Compiling a shader isn't the whole story: on Windows the browser's
+   * graphics layer finishes preparing it the first time it is actually drawn
+   * (and for each new way it's drawn: lines, instanced, …). Without this the
+   * first sparks or the first freight train caused a ~200 ms stall on the GPU.
+   * The screen keeps showing the last frame while this happens.
+   */
+  private warmDraw(): void {
+    const shown: THREE.Object3D[] = [];
+    const counts: [THREE.InstancedMesh, number][] = [];
+    this.scene.traverse((o) => {
+      if (!o.visible) { o.visible = true; shown.push(o); }
+      const inst = o as THREE.InstancedMesh;
+      if (inst.isInstancedMesh && inst.count === 0) { counts.push([inst, 0]); inst.count = 1; }
+    });
+    const shadowWasAuto = this.renderer.shadowMap.autoUpdate;
+    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.setRenderTarget(this.renderTarget);
+    this.renderer.clear();
+    this.renderer.render(this.scene, this.camera);
+    if (this.bloomEnabled) {
+      this.bloom.render(this.renderer, null as unknown as THREE.WebGLRenderTarget, this.renderTarget, 0, false);
+    }
+    this.renderer.setRenderTarget(null);
+    this.renderer.shadowMap.autoUpdate = shadowWasAuto;
+    for (const o of shown) o.visible = false;
+    for (const [inst, n] of counts) inst.count = n;
+    this.forceFrame = true; // draw the real scene on the next frame
   }
 
   /** Register a callback to be called every frame with delta time */
@@ -322,15 +356,16 @@ export class Engine {
 
     // Nothing can change (menus, pause): keep the last frame, draw nothing
     if (this.renderHold() && !this.forceFrame && !this.pendingCapture) return;
-    this.forceFrame = false;
 
     // Shaders still compiling in the background: keep showing the last frame
+    // (a forced frame waits until they're ready, then draws the real scene)
     if (this.compiling) {
       this.renderer.setRenderTarget(null);
       this.renderer.clear();
       this.renderer.render(this.pixelQuadScene, this.pixelQuadCamera);
       return;
     }
+    this.forceFrame = false;
 
     // Step 1: Render the scene to the low-res render target
     this.renderer.info.reset(); // stats (draw calls etc.) cover the whole frame

@@ -257,3 +257,30 @@ describe('sparks', () => {
     expect(alive).toBe(800);
   });
 });
+
+describe('slow-order signs', () => {
+  it('draw every sign with 3 instanced meshes, and a cleared board spins to the green side', async () => {
+    const { SlowOrderSigns } = await import('../world/SlowOrderSigns');
+    const track = new RailTrack(
+      [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 200), new THREE.Vector3(0, 0, 400)],
+      undefined, 10, 50,
+    );
+    const slow = [true, false, true, true, false, false, true, false, false, false];
+    const signs = new SlowOrderSigns(track, slow);
+    const meshes = signs.group.children as THREE.InstancedMesh[];
+    expect(meshes.length).toBe(3);
+    for (const m of meshes) { expect(m.isInstancedMesh).toBe(true); expect(m.count).toBe(4); }
+    // The yellow face of sign #0 faces back down the track (towards the
+    // oncoming grinder); after clearing, the green face does
+    const fronts = meshes[1], backs = meshes[2];
+    const normalOf = (m: THREE.InstancedMesh, i: number) => {
+      const mat = new THREE.Matrix4(); m.getMatrixAt(i, mat);
+      return new THREE.Vector3(0, 0, 1).transformDirection(mat);
+    };
+    expect(normalOf(fronts, 0).z).toBeLessThan(-0.9);
+    signs.clear(0);
+    for (let i = 0; i < 120; i++) signs.update(1 / 60);
+    expect(normalOf(backs, 0).z).toBeLessThan(-0.9);
+    expect(normalOf(fronts, 1).z).toBeLessThan(-0.9); // other signs untouched
+  });
+});

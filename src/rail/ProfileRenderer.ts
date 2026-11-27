@@ -14,6 +14,9 @@ const LABEL_COLOR = '#888';
 const GRID_COLOR = 'rgba(255, 255, 255, 0.08)';
 const CONTACT_COLOR = '#ff8800';
 
+/** The plot's height range snaps to steps of this many mm (lets the grid be cached) */
+const Y_SNAP = 0.5;
+
 export class ProfileRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -124,8 +127,11 @@ export class ProfileRenderer {
       }
     }
     const marginY = Math.max(0.5, (maxY - minY) * 0.2);
-    minY -= marginY;
-    maxY += marginY;
+    // Snap the range outward to half-millimetre steps: the plot then only
+    // rescales when the profile crosses a step, so the grid and its labels
+    // can be drawn once and reused (see drawGridCached)
+    minY = Math.floor((minY - marginY) / Y_SNAP) * Y_SNAP;
+    maxY = Math.ceil((maxY + marginY) / Y_SNAP) * Y_SNAP;
     const rangeY = maxY - minY;
 
     const drawW = width - PADDING * 2;
@@ -135,8 +141,8 @@ export class ProfileRenderer {
       : (x: number) => PADDING + ((x - bounds.minX) / rangeX) * drawW;
     const toCanvasY = (y: number) => PADDING + ((y - minY) / rangeY) * drawH;
 
-    // Draw grid
-    this.drawGrid(ctx, bounds.minX, bounds.maxX, minY, maxY, toCanvasX, toCanvasY);
+    // Draw grid (from a cached image unless the plot's range changed)
+    this.drawGridCached(ctx, bounds.minX, bounds.maxX, minY, maxY, toCanvasX, toCanvasY);
 
     // Draw stone contact zone (always visible when stone is shown)
     if (this.stoneVisible) {
@@ -347,6 +353,35 @@ export class ProfileRenderer {
       ctx.stroke();
     }
   }
+
+  /**
+   * The grid lines and their ~20 text labels are the slowest part of the
+   * display to draw (canvas text is expensive), and they only change when the
+   * plot's range does. Draw them once into an off-screen canvas, then just
+   * stamp that image each frame.
+   */
+  private drawGridCached(
+    ctx: CanvasRenderingContext2D,
+    minX: number, maxX: number,
+    minY: number, maxY: number,
+    toCanvasX: (x: number) => number,
+    toCanvasY: (y: number) => number
+  ): void {
+    const { width, height } = this.canvas;
+    const key = `${minX}|${maxX}|${minY}|${maxY}|${this.mirrored}|${width}|${height}`;
+    if (!this.gridCanvas || this.gridKey !== key) {
+      this.gridCanvas ??= document.createElement('canvas');
+      this.gridCanvas.width = width;
+      this.gridCanvas.height = height;
+      const g = this.gridCanvas.getContext('2d')!;
+      g.clearRect(0, 0, width, height);
+      this.drawGrid(g, minX, maxX, minY, maxY, toCanvasX, toCanvasY);
+      this.gridKey = key;
+    }
+    ctx.drawImage(this.gridCanvas, 0, 0);
+  }
+  private gridCanvas: HTMLCanvasElement | null = null;
+  private gridKey = '';
 
   private drawGrid(
     ctx: CanvasRenderingContext2D,

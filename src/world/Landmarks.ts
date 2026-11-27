@@ -20,6 +20,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { isPlain, addMaterialAttributes, createVertexPbrMaterial } from '../core/bakeStatic';
 import { GAME_SECTION_LENGTH, type RailTrack } from '../rail/RailTrack';
 import type { Region } from '../types/rail';
 
@@ -242,16 +243,44 @@ export class Landmarks {
     });
   }
 
-  /** Merge all queued static geometry: one mesh (one draw call) per material */
+  /**
+   * Merge all queued static geometry. Plain materials (a colour, no texture,
+   * brightness never changes) all go into ONE mesh that stores each part's
+   * colour per vertex; the rest get one mesh per material.
+   */
   private bake(): void {
-    for (const [m, geos] of this.batches) {
-      const merged = mergeGeometries(geos, false);
-      for (const geo of geos) geo.dispose();
-      if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, m);
+    const animated = new Set<THREE.Material>([this.mat.lampWarm, this.mat.lampRed]);
+    if (this.mat.windows) animated.add(this.mat.windows);
+    const plain: THREE.BufferGeometry[] = [];
+    const add = (geo: THREE.BufferGeometry, m: THREE.Material) => {
+      const mesh = new THREE.Mesh(geo, m);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.group.add(mesh);
+    };
+    for (const [m, geos] of this.batches) {
+      if (isPlain(m, animated)) {
+        for (const geo of geos) {
+          // same attribute set for every part, so they can all merge
+          for (const name of Object.keys(geo.attributes)) {
+            if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name);
+          }
+          if (!geo.getAttribute('uv')) {
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geo.getAttribute('position').count * 2), 2));
+          }
+          addMaterialAttributes(geo, m);
+          plain.push(geo.index ? geo.toNonIndexed() : geo);
+        }
+        continue;
+      }
+      const merged = mergeGeometries(geos, false);
+      for (const geo of geos) geo.dispose();
+      if (merged) add(merged, m);
+    }
+    if (plain.length) {
+      const merged = mergeGeometries(plain, false);
+      for (const geo of plain) geo.dispose();
+      if (merged) add(merged, createVertexPbrMaterial());
     }
     this.batches.clear();
   }

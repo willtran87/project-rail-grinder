@@ -31,7 +31,7 @@ import { TrackMap } from './ui/TrackMap';
 import { FloatingScore } from './ui/FloatingScore';
 import { RadioDispatch } from './ui/RadioDispatch';
 import { InspectionReport } from './ui/InspectionReport';
-import { JobSelect, JOBS, type JobDefinition } from './ui/JobSelect';
+import { JobSelect, type JobDefinition } from './ui/JobSelect';
 import { eventBus } from './core/EventBus';
 import { disposeObject3D } from './core/dispose';
 import { CameraController } from './core/CameraController';
@@ -130,6 +130,13 @@ export class Game {
 
   // Rail grinder consist
   private grinder!: RailGrinder;
+
+  /** Build the grinder consist if it isn't built yet (see the constructor) */
+  private ensureGrinder(): void {
+    if (this.grinder) return;
+    this.grinder = new RailGrinder();
+    this.engine.scene.add(this.grinder.group);
+  }
 
   // Camera views, screen shake, inspection cinematic
   private camera: CameraController;
@@ -342,9 +349,11 @@ export class Game {
     // Ground (persistent — repositioned per job)
     this.createGround();
 
-    // Rail grinder consist
-    this.grinder = new RailGrinder();
-    this.engine.scene.add(this.grinder.group);
+    // Rail grinder consist: built just after the job menu appears (it takes a
+    // moment to merge its ~4,000 parts, and nobody sees it until a job starts).
+    // ensureGrinder() also builds it on the spot if a job is picked first.
+    const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    if (idle) idle(() => this.ensureGrinder()); else setTimeout(() => this.ensureGrinder(), 50);
 
     // Day/night cycle with rich color palettes
     this.dayNight = new DayNightCycle(
@@ -400,9 +409,12 @@ export class Game {
     this.jobSelect = new JobSelect();
     this.guidedTutorial = new GuidedTutorial();
 
-    // Build the first job's world as the backdrop behind the job-select screen
-    // (it gets rebuilt for whichever job the player actually picks)
-    this.buildWorld(JOBS[0]);
+    // (No world is built yet: the job-select screen covers everything, and the
+    // world is built for whichever job the player picks. Building one just as
+    // a hidden backdrop cost ~0.3 s plus compiling all its shaders on the first
+    // frame, which froze the page for up to a second after clicking start.)
+    // Compile what exists now (sky, ground, effects) in the background:
+    this.engine.prewarm();
 
     // Show job selection screen first
     this.startJobSelect();
@@ -427,9 +439,8 @@ export class Game {
     };
     window.addEventListener('keydown', initAudio);
     window.addEventListener('click', initAudio);
-
-    this.profileRenderer.draw(this.track.getProfile(0), this.targetProfile);
-    this.updateHUD();
+    // (The profile displays and HUD are drawn once a job's world exists:
+    // update() refreshes them every frame of play.)
   }
 
   /**
@@ -1376,6 +1387,7 @@ export class Game {
     this.passingTrain.setTrack(this.track);
     this.engine.scene.add(this.passingTrain.group);
     this.engine.scene.add(this.passingTrain.adjacentTrack);
+    this.giveInstancedCastersOwnDepthMaterial();
 
     // Set time of day from job
     const times = ['dawn', 'day', 'dusk', 'night'];
@@ -1389,8 +1401,24 @@ export class Game {
     this.updateTrackMapDefects();
   }
 
+  /**
+   * The shadow map draws every caster with one shared depth material. When
+   * instanced casters (trees, sign posts) and normal ones take turns, three.js
+   * has to switch that material between its instanced and normal shader each
+   * time. Giving the instanced ones their own identical copy avoids that.
+   */
+  private giveInstancedCastersOwnDepthMaterial(): void {
+    this._instancedDepth ??= new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    this.engine.scene.traverse((o) => {
+      const m = o as THREE.InstancedMesh;
+      if (m.isInstancedMesh && m.castShadow && !m.customDepthMaterial) m.customDepthMaterial = this._instancedDepth!;
+    });
+  }
+  private _instancedDepth: THREE.MeshDepthMaterial | null = null;
+
   /** Tear down current job and rebuild for a new one */
   private rebuildForJob(job: JobDefinition): void {
+    this.ensureGrinder();
     // Freeze gameplay until startGame() runs (the pre-job report may be showing)
     this.gameStarted = false;
     this.jobComplete = false;

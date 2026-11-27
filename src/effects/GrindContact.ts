@@ -9,6 +9,9 @@
 
 import * as THREE from 'three';
 
+/** Most trail markers kept at once (oldest is reused) */
+const TRAIL_MAX = 100;
+
 export class GrindContact {
   readonly group: THREE.Group;
 
@@ -22,8 +25,14 @@ export class GrindContact {
   readonly contactLight = { position: new THREE.Vector3(), intensity: 0 };
   private contactMaterial: THREE.MeshStandardMaterial;
 
-  // Trail markers showing where you've ground
-  private trailMarkers: THREE.Mesh[] = [];
+  // Trail markers showing where you've ground: ONE instanced mesh with a
+  // slot per marker, reused in a ring. (It used to add a new mesh — and a new
+  // geometry — every 2 m: up to 100 extra draw calls, and the first one
+  // compiled its shader mid-play, a visible hitch when grinding started.)
+  private trail: THREE.InstancedMesh;
+  private trailCount = 0;   // markers placed so far (capped at TRAIL_MAX)
+  private trailNext = 0;    // ring-buffer slot for the next marker
+  private _trailMatrix = new THREE.Matrix4();
   private trailMaterial: THREE.MeshStandardMaterial;
   private lastTrailZ: number = -Infinity;
 
@@ -63,6 +72,10 @@ export class GrindContact {
       transparent: true,
       opacity: 0.8,
     });
+    this.trail = new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 0.02, 1.5), this.trailMaterial, TRAIL_MAX);
+    this.trail.count = 0;
+    this.trail.frustumCulled = false; // markers are spread along the track
+    this.group.add(this.trail);
   }
 
   /** Activate the contact effect at a position */
@@ -101,21 +114,13 @@ export class GrindContact {
 
   /** Add a small bright marker on the rail to show where you've ground */
   private addTrailMarker(position: THREE.Vector3): void {
-    const marker = new THREE.Mesh(
-      new THREE.BoxGeometry(1.8, 0.02, 1.5),
-      this.trailMaterial
-    );
-    marker.position.copy(position);
-    marker.position.y += 0.01;
-    this.group.add(marker);
-    this.trailMarkers.push(marker);
-
-    // Limit trail length to avoid memory issues
-    if (this.trailMarkers.length > 100) {
-      const old = this.trailMarkers.shift()!;
-      this.group.remove(old);
-      old.geometry.dispose();
-    }
+    // Oldest marker is reused once all TRAIL_MAX slots are in use
+    this._trailMatrix.makeTranslation(position.x, position.y + 0.01, position.z);
+    this.trail.setMatrixAt(this.trailNext, this._trailMatrix);
+    this.trail.instanceMatrix.needsUpdate = true;
+    this.trailNext = (this.trailNext + 1) % TRAIL_MAX;
+    this.trailCount = Math.min(TRAIL_MAX, this.trailCount + 1);
+    this.trail.count = this.trailCount;
   }
 
   /** Fade the contact light when not active. Call each frame. */
@@ -125,17 +130,16 @@ export class GrindContact {
       this.contactMaterial.opacity *= 0.85;
     }
 
-    // Slowly fade trail markers over time
-    for (const marker of this.trailMarkers) {
-      const mat = marker.material as THREE.MeshStandardMaterial;
-      mat.emissiveIntensity = Math.max(0, mat.emissiveIntensity - 0.02 * dt);
+    // Slowly fade the trail's glow over time (all markers share one material,
+    // which used to be faded once per marker: same rate as before)
+    if (this.trailCount > 0) {
+      this.trailMaterial.emissiveIntensity = Math.max(0,
+        this.trailMaterial.emissiveIntensity - 0.02 * dt * this.trailCount);
     }
   }
 
   dispose(): void {
-    for (const m of this.trailMarkers) {
-      m.geometry.dispose();
-    }
+    this.trail.geometry.dispose();
     this.contactGlow.geometry.dispose();
     this.contactMaterial.dispose();
     this.trailMaterial.dispose();

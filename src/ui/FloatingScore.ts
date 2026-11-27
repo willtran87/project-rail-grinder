@@ -41,18 +41,20 @@ export class FloatingScore {
       color: ${color};
       text-shadow: 0 0 8px ${color}, 2px 2px 0 rgba(0,0,0,0.8);
       transform: translate(-50%, 0) scale(1.3);
-      transition: all 1.2s ease-out;
+      transition: transform 1.2s ease-out, opacity 1.2s ease-out;
+      will-change: transform, opacity;
       opacity: 1;
       z-index: 16;
       pointer-events: none;
     `;
     this.container.appendChild(el);
 
-    // Trigger animation
+    // Trigger animation: float up, shrink and fade. Only transform and opacity
+    // change, so the browser paints the glowing text once and just moves that
+    // image (animating \`top\` re-did layout and repainted the blur every frame).
     requestAnimationFrame(() => {
-      el.style.top = `${posY - 80}px`;
       el.style.opacity = '0';
-      el.style.transform = 'translate(-50%, 0) scale(0.8)';
+      el.style.transform = 'translate(-50%, -80px) scale(0.8)';
     });
 
     // Remove after animation
