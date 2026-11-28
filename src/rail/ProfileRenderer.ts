@@ -37,6 +37,7 @@ export class ProfileRenderer {
   private lastKey = '';
   private lastProfile: RailProfile | null = null;
   private lastDrawTime = 0;
+  private lastVersion = -1;
   private borderFlash: boolean = false;
 
   // Preview and before/after
@@ -96,12 +97,19 @@ export class ProfileRenderer {
    */
   draw(current: RailProfile, target?: TargetProfile): void {
     const now = performance.now();
-    const key = `${current.version}|${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
+    // Everything on the display except the rail curve itself
+    const key = `${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
       + `${this.stoneVisible}|${this.stoneGrinding}|${this.damageCount}|${this.passCount}|`
       + `${this.borderFlash}|${this.mirrored}|${isColorblindMode()}|${this.worstZones.length}`;
     const animating = this.worstZones.length > 0 || (this.ghostProfile !== null && this.ghostAlpha > 0.01);
     const changed = key !== this.lastKey || current !== this.lastProfile || this.previewProfile !== null;
-    if (!changed && (!animating || now - this.lastDrawTime < 33)) return;
+    // While grinding the curve changes every frame; redrawing it 30 times a
+    // second is just as smooth to the eye and halves the cost (other changes —
+    // aim, pressure, a new segment — still redraw at once)
+    const curveChanged = current.version !== this.lastVersion;
+    const due = now - this.lastDrawTime >= 33;
+    if (!changed && !((curveChanged || animating) && due)) return;
+    this.lastVersion = current.version;
     const elapsed = Math.min(0.1, (now - this.lastDrawTime) / 1000);
     this.lastKey = key;
     this.lastProfile = current;

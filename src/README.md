@@ -266,5 +266,10 @@ Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame 
   - One shared noise buffer (wind, grinding grit, ambience), and the grinding sound is built at audio start-up rather than on the first grind.
   - The audio device (~90 ms to open) is opened on the title click and kept paused, so picking a job doesn't hitch; the menu stays silent as before.
 - **Low preset** also makes the game pixels one step chunkier (`pixelBoost`) — on a weak GPU the number of pixels is the main cost.
+- **Crossing bell** re-triggers one permanent two-tone voice (it rings twice a second; it used to make 4 new audio nodes per ding).
+- **Profile displays** redraw the rail curve at most 30 times a second while grinding (other changes — aim, pressure, a new segment — still redraw at once).
+- **Tried and rejected (measured worse)**:
+  - *Cutting route-long objects into map tiles* so off-screen parts could be skipped (trees, scenery, rails, ties). The camera sees most of the route, so it only removed ~20% of the triangles but doubled the draw calls: GPU time went **up** (1.4 → 2.5 ms on Marias at 150 m tiles; no better at 300 m).
+  - *Simpler models for distant grinder cars*: hiding the whole grinder (82k triangles) changed GPU time by ~0.005 ms — triangles aren't a cost in this game, draw calls are.
 - **Not done, on purpose**: merging the three ground-mist layers (they cost ~0.01 ms of GPU and their separate heights give the mist depth), and caching the static part of the shadow map (the shadow box follows the camera, so a cache would be invalid nearly every frame; the whole pass is ~0.55 ms).
 - **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)

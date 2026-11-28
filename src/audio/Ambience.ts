@@ -256,9 +256,40 @@ export class Ambience {
   }
 
   /** Level-crossing bell: a bright metallic ding */
+  /**
+   * Crossing bell: one permanent two-tone voice, re-triggered for each ding
+   * (it rings twice a second; making 4 new audio nodes per ding added up).
+   * Same sound as tone(1650→1640, 0.35 s, triangle) + tone(2780→2770, 0.2 s, sine).
+   */
+  private bell: { osc: OscillatorNode; gain: GainNode; f0: number; f1: number; dur: number; level: number }[] | null = null;
+
   private ding(vol: number): void {
-    const t = this.ctx.currentTime;
-    this.tone(1650, 1640, 0.35, 0.05 * vol, t, 'triangle');
-    this.tone(2780, 2770, 0.2, 0.02 * vol, t, 'sine');
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    if (!this.bell) {
+      this.bell = [
+        { type: 'triangle' as OscillatorType, f0: 1650, f1: 1640, dur: 0.35, level: 0.05 },
+        { type: 'sine' as OscillatorType, f0: 2780, f1: 2770, dur: 0.2, level: 0.02 },
+      ].map((v) => {
+        const osc = ctx.createOscillator();
+        osc.type = v.type;
+        const gain = ctx.createGain();
+        gain.gain.value = 0;
+        osc.connect(gain).connect(this.out);
+        osc.start();
+        return { osc, gain, f0: v.f0, f1: v.f1, dur: v.dur, level: v.level };
+      });
+    }
+    for (const b of this.bell) {
+      const f = b.osc.frequency, g = b.gain.gain;
+      f.cancelScheduledValues(t);
+      f.setValueAtTime(b.f0, t);
+      f.exponentialRampToValueAtTime(b.f1, t + b.dur);
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(0.0001, t);
+      g.exponentialRampToValueAtTime(Math.max(0.0001, b.level * vol), t + Math.min(0.04, b.dur * 0.3));
+      g.exponentialRampToValueAtTime(0.0001, t + b.dur);
+      g.setValueAtTime(0, t + b.dur + 0.05);
+    }
   }
 }
