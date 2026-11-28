@@ -224,6 +224,7 @@ export class Game {
     const q = QUALITY_PRESETS[this.quality];
     this.engine.bloomEnabled = q.bloom;
     this.engine.fpsCap = q.fpsCap;
+    this.engine.setPixelBoost(q.pixelBoost);
     const sun = this.engine.directionalLight;
     sun.castShadow = q.shadowMapSize > 0;
     if (q.shadowMapSize > 0 && sun.shadow.mapSize.x !== q.shadowMapSize) {
@@ -304,7 +305,8 @@ export class Game {
       this.engine.renderHeight / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)));
   }
 
-  constructor() {
+  /** @param audioContext - made on the title click (a user gesture), if available */
+  constructor(audioContext?: AudioContext) {
     const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 
     this.engine = new Engine(canvas);
@@ -375,6 +377,13 @@ export class Game {
 
     // Audio
     this.audio = new AudioManager();
+    if (audioContext) {
+      // The title click opened the audio device (the slow part); build the
+      // sound graph now but stay silent in the menu, as before. The first
+      // click / key press in the menu just resumes it (see initAudio below).
+      this.audio.init(audioContext);
+      void audioContext.suspend();
+    }
 
     // Track map
     this.trackMap = new TrackMap();
@@ -594,7 +603,7 @@ export class Game {
       this.applyQuality();
       // Shadows on/off changes every material's shader: recompile in the
       // background (the picture holds for a moment) rather than freezing
-      this.engine.prewarm();
+      this.engine.prewarm(false);
       this.floatingScore.show(`GRAPHICS: ${this.quality.toUpperCase()}`, '#ffffff');
     }
     if (this.input.wasKeyPressed('c')) {

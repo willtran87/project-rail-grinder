@@ -20,7 +20,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { isPlain, addMaterialAttributes, createVertexPbrMaterial } from '../core/bakeStatic';
+import { bakeStatic, isPlain, addMaterialAttributes, createVertexPbrMaterial } from '../core/bakeStatic';
 import { GAME_SECTION_LENGTH, type RailTrack } from '../rail/RailTrack';
 import type { Region } from '../types/rail';
 
@@ -123,6 +123,8 @@ export class Landmarks {
   private bobbers: { obj: THREE.Object3D; phase: number }[] = [];
   private beams: THREE.Object3D[] = [];
   private beamMat: THREE.MeshBasicMaterial | null = null;
+  /** Materials whose brightness changes while playing (never merged into the per-vertex material) */
+  private animatedMats = new Set<THREE.Material>();
   private time = 0;
 
   // Static meshes waiting to be merged, grouped by material
@@ -174,6 +176,7 @@ export class Landmarks {
     }
     this.buildCrossings();
     this.bake();
+    this.bakeMovingParts();
     // The moving parts (gates, lamps, blades) share materials with the baked
     // parts, which receive shadows. Make them match: three.js compiles a
     // material once per receive-shadow setting, and objects that disagree
@@ -652,6 +655,8 @@ export class Landmarks {
 
       // Two signal masts, on opposite road edges, each with a gate for the
       // lane that approaches it
+      const lampMats = [m.lampRed.clone(), m.lampRed.clone()];
+      lampMats.forEach((lm) => this.animatedMats.add(lm));
       const masts = [
         { x: -3.8, z: -3.6, armDir: 1 },  // left side, arm reaches +z
         { x: 8.8, z: 3.6, armDir: -1 },   // right side (past the adjacent track)
@@ -666,10 +671,13 @@ export class Landmarks {
         this.box(s, 0.05, 0.1, 1.3, m.darkMetal, mast.x - 0.06, 2.9, mast.z); // lamp bar
         this.box(s, 0.5, 0.5, 0.5, m.darkMetal, mast.x, 0.25, mast.z);        // gate motor box
         const lamps: THREE.Mesh[] = [];
-        for (const lz of [-0.5, 0.5]) {
-          const lamp = this.box(a, 0.08, 0.28, 0.28, m.lampRed.clone(), mast.x - 0.12, 2.9, mast.z + lz);
+        [-0.5, 0.5].forEach((lz, i) => {
+          // Lamps that flash together share a material (one per crossing and
+          // side), so they merge into one draw call; update() only changes
+          // the material's brightness
+          const lamp = this.box(a, 0.08, 0.28, 0.28, lampMats[i], mast.x - 0.12, 2.9, mast.z + lz);
           lamps.push(lamp);
-        }
+        });
         crossing.lamps.push(lamps);
         // Gate arm: red and white stripes, pivoting at the mast
         const pivot = new THREE.Group();
@@ -711,6 +719,34 @@ export class Landmarks {
   // ------------------------------------------------------------------
   // Public
   // ------------------------------------------------------------------
+
+  /**
+   * The moving parts (windmill wheel, cows and their grazing heads, gate arms,
+   * cars, lighthouse beams) can't join the big merged mesh, but each one's own
+   * pieces never move relative to each other: merge those, so a cow is 2 draw
+   * calls instead of 7 and a gate arm 1 instead of 6. On the prairie route
+   * this took the landmarks from ~120 draw calls to ~40.
+   */
+  private bakeMovingParts(): void {
+    const animated = new Set<THREE.Material>([this.mat.lampWarm, this.mat.lampRed, ...this.animatedMats]);
+    if (this.mat.windows) animated.add(this.mat.windows);
+    if (this.beamMat) animated.add(this.beamMat);
+    const vertexMaterial = this.movingMaterial;
+    // Everything that moves on its own
+    const movers = new Set<THREE.Object3D>();
+    for (const s of this.spinners) movers.add(s.obj);
+    for (const b of this.bobbers) movers.add(b.obj);
+    for (const c of this.crossings) { movers.add(c.car); for (const gt of c.gates) movers.add(gt.pivot); }
+    // Each mover's own pieces (nested movers are left to themselves) ...
+    for (const m of movers) bakeStatic(m, { keep: movers, vertexMaterial, animated });
+    // ... and the fixed pieces of the groups that hold them (cow bodies, crossing lamps)
+    for (const child of [...this.group.children]) {
+      if (!(child as THREE.Mesh).isMesh && !movers.has(child)) {
+        bakeStatic(child, { keep: movers, vertexMaterial, animated });
+      }
+    }
+  }
+  private movingMaterial = createVertexPbrMaterial();
 
   /** True if trees/rocks shouldn't be placed at (x, z): roads and landmarks */
   blocks(x: number, z: number): boolean {

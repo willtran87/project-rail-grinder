@@ -11,6 +11,7 @@
  */
 
 import { Ambience } from './Ambience';
+import { glide, forgetGlide } from './glide';
 import type { Region } from '../types/rail';
 
 export class AudioManager {
@@ -30,6 +31,7 @@ export class AudioManager {
   private windSource: AudioBufferSourceNode | null = null;
 
   private initialized = false;
+  private noise: AudioBuffer | null = null;
   private _muted = false;
 
   // Route-specific background sound (birds, surf, traffic, crossing bell…)
@@ -51,19 +53,33 @@ export class AudioManager {
     this.ambience?.update(dt, darkness, rain, snow, bell);
   }
 
-  /** Must be called from a user gesture (click/key) to unlock audio */
-  init(): void {
-    if (this.initialized) return;
+  /**
+   * Must be called from a user gesture (click/key) to unlock audio — or be
+   * given a context that was created in one (opening the audio device takes
+   * ~90 ms, so main.ts does that on the title click, hidden by the fade).
+   */
+  init(context?: AudioContext): void {
+    if (this.initialized) {
+      // Already built (and paused until now, see Game): just start playing
+      void this.ctx?.resume();
+      return;
+    }
 
     try {
-      this.ctx = new AudioContext();
+      this.ctx = context ?? new AudioContext();
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 0.3;
       this.masterGain.connect(this.ctx.destination);
 
+      // One noise buffer shared by wind, grinding grit and the route ambience
+      // (filling it is the slow part of starting the audio: once is enough)
+      this.noise = this.createNoiseBuffer(3);
       this.setupDiesel();
       this.setupWind();
-      this.ambience = new Ambience(this.ctx, this.masterGain, this.createNoiseBuffer(4));
+      this.setupClickVoice();
+      // The grinding sound is built now, silent, rather than on the first grind
+      this.ensureGrindNodes();
+      this.ambience = new Ambience(this.ctx, this.masterGain, this.noise);
       this.ambience.setRegion(this.region);
       this.initialized = true;
     } catch {
@@ -96,22 +112,23 @@ export class AudioManager {
   startGrinding(grindIntensity: number, onDefect: number = 0, overgrinding: boolean = false): void {
     if (!this.ctx || !this.masterGain) return;
     this.ensureGrindNodes();
+    this.grindingSilent = false;
 
     const now = this.ctx.currentTime;
-    const ramp = now + 0.08;
+    // (glide: smooth, and only sent when the value moves — see glide.ts)
     // Base metallic tone: pitch climbs when you're on a defect, drops when over-grinding
     const basePitch = overgrinding ? 85 + Math.random() * 25 : 110 + onDefect * 140 + grindIntensity * 30;
-    this.grindNode!.frequency.linearRampToValueAtTime(basePitch, ramp);
-    this.grindGain!.gain.linearRampToValueAtTime(grindIntensity * (overgrinding ? 0.2 : 0.1 + onDefect * 0.08), ramp);
+    glide(this.grindNode!.frequency, basePitch, now);
+    glide(this.grindGain!.gain, grindIntensity * (overgrinding ? 0.2 : 0.1 + onDefect * 0.08), now);
 
     // Grit: loud and wide when over-grinding, quieter on good rail
-    this.grindNoiseFilter!.frequency.linearRampToValueAtTime(overgrinding ? 900 : 3000 - onDefect * 800, ramp);
-    this.grindNoiseGain!.gain.linearRampToValueAtTime(grindIntensity * (overgrinding ? 0.2 : 0.05 + onDefect * 0.05), ramp);
+    glide(this.grindNoiseFilter!.frequency, overgrinding ? 900 : 3000 - onDefect * 800, now);
+    glide(this.grindNoiseGain!.gain, grindIntensity * (overgrinding ? 0.2 : 0.05 + onDefect * 0.05), now);
 
     // Sweet-spot sing: only when actually taking metal off a defect
     const sing = overgrinding ? 0 : onDefect;
-    this.singNode!.frequency.linearRampToValueAtTime(620 + sing * 260, ramp);
-    this.singGain!.gain.linearRampToValueAtTime(sing * grindIntensity * 0.07, ramp);
+    glide(this.singNode!.frequency, 620 + sing * 260, now);
+    glide(this.singGain!.gain, sing * grindIntensity * 0.07, now);
   }
 
   /** Build the grinding sound graph the first time it's needed */
@@ -145,9 +162,8 @@ export class AudioManager {
       noiseFilter.type = 'highpass';
       noiseFilter.frequency.value = 3000;
 
-      const noiseBuffer = this.createNoiseBuffer(2);
       this.noiseSource = this.ctx.createBufferSource();
-      this.noiseSource.buffer = noiseBuffer;
+      this.noiseSource.buffer = this.noise ?? this.createNoiseBuffer(3);
       this.noiseSource.loop = true;
       this.noiseSource.connect(noiseFilter);
       noiseFilter.connect(this.grindNoiseGain);
@@ -180,13 +196,21 @@ export class AudioManager {
     }
   }
 
+  /** True once stopGrinding() has faded the grinding sound out (it's called every frame while not grinding) */
+  private grindingSilent = true;
+
   /** Stop the grinding sound */
   stopGrinding(): void {
     if (!this.ctx || !this.grindGain) return;
+    if (this.grindingSilent) return; // already faded out: nothing to schedule
+    this.grindingSilent = true;
     const now = this.ctx.currentTime;
-    this.grindGain.gain.linearRampToValueAtTime(0, now + 0.15);
-    this.grindNoiseGain?.gain.linearRampToValueAtTime(0, now + 0.15);
-    this.singGain?.gain.linearRampToValueAtTime(0, now + 0.15);
+    for (const g of [this.grindGain, this.grindNoiseGain, this.singGain]) {
+      if (!g) continue;
+      g.gain.cancelScheduledValues(now);
+      g.gain.setTargetAtTime(0, now, 0.05); // ~0.15 s fade, as before
+      forgetGlide(g.gain); // so the next startGrinding() fades back in
+    }
   }
 
   /** Play a completion ding (synthesized bell) */
@@ -315,27 +339,38 @@ export class AudioManager {
     }
   }
 
+  // Wheel clicks: one permanent voice (oscillator → filter → gain) that is
+  // re-triggered for each click, instead of three new audio nodes per click
+  private clickOsc: OscillatorNode | null = null;
+  private clickFilter: BiquadFilterNode | null = null;
+  private clickGain: GainNode | null = null;
+
+  private setupClickVoice(): void {
+    if (!this.ctx || !this.masterGain) return;
+    this.clickOsc = this.ctx.createOscillator();
+    this.clickFilter = this.ctx.createBiquadFilter();
+    this.clickFilter.type = 'lowpass';
+    this.clickGain = this.ctx.createGain();
+    this.clickGain.gain.value = 0;
+    this.clickOsc.connect(this.clickFilter).connect(this.clickGain).connect(this.masterGain);
+    this.clickOsc.start();
+  }
+
   /** Play click that varies with rail condition — rough on damaged, smooth on good */
   private playClickWithCondition(condition: number): void {
-    if (!this.ctx || !this.masterGain) return;
+    if (!this.ctx || !this.clickOsc || !this.clickGain || !this.clickFilter) return;
     const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
     // Damaged rail: lower pitch, louder, longer. Good rail: higher pitch, softer, shorter.
-    osc.type = condition > 0.7 ? 'sine' : 'triangle';
-    osc.frequency.value = 60 + condition * 60 + Math.random() * (30 - condition * 20);
-    const gain = this.ctx.createGain();
+    this.clickOsc.type = condition > 0.7 ? 'sine' : 'triangle';
+    this.clickOsc.frequency.setValueAtTime(60 + condition * 60 + Math.random() * (30 - condition * 20), now);
+    this.clickFilter.frequency.setValueAtTime(150 + condition * 200, now); // brighter on good rail
     const volume = 0.08 - condition * 0.05; // louder on damaged rail
     const decay = 0.1 - condition * 0.05; // longer on damaged rail
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05 + decay);
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 150 + condition * 200; // brighter on good rail
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.12);
+    const g = this.clickGain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(volume, now);
+    g.exponentialRampToValueAtTime(0.001, now + Math.min(0.12, 0.05 + decay));
+    g.setValueAtTime(0, now + 0.12); // the old click's oscillator stopped at 0.12 s
   }
 
   /** Update diesel rumble based on speed */
@@ -343,12 +378,8 @@ export class AudioManager {
     if (!this.dieselNode || !this.dieselGain || !this.ctx) return;
     const now = this.ctx.currentTime;
     // Idle at low frequency, increases with speed
-    this.dieselNode.frequency.linearRampToValueAtTime(
-      25 + Math.abs(speed) * 5, now + 0.1
-    );
-    this.dieselGain.gain.linearRampToValueAtTime(
-      0.03 + Math.abs(speed) * 0.01, now + 0.1
-    );
+    glide(this.dieselNode.frequency, 25 + Math.abs(speed) * 5, now, 0.04);
+    glide(this.dieselGain.gain, 0.03 + Math.abs(speed) * 0.01, now, 0.04);
   }
 
   private setupDiesel(): void {
@@ -374,9 +405,8 @@ export class AudioManager {
   private setupWind(): void {
     if (!this.ctx || !this.masterGain) return;
 
-    const buffer = this.createNoiseBuffer(4);
     this.windSource = this.ctx.createBufferSource();
-    this.windSource.buffer = buffer;
+    this.windSource.buffer = this.noise ?? this.createNoiseBuffer(3);
     this.windSource.loop = true;
 
     const filter = this.ctx.createBiquadFilter();
@@ -410,6 +440,7 @@ export class AudioManager {
     this.dieselNode?.stop();
     this.noiseSource?.stop();
     this.windSource?.stop();
+    this.clickOsc?.stop();
     this.ctx?.close();
   }
 }

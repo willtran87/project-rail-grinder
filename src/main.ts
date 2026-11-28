@@ -15,6 +15,10 @@ const FADE_MS = 500;
 
 titleScreen.addEventListener('click', () => {
   const clickedAt = performance.now();
+  // This click is a user gesture, so sound may start: open the audio device
+  // now (it takes ~90 ms) while the title fades, not on the job-menu click
+  let audioContext: AudioContext | undefined;
+  try { audioContext = new AudioContext(); } catch { /* no Web Audio: play silently */ }
   titleScreen.style.willChange = 'opacity'; // own layer: fades on the compositor
   titleScreen.style.transition = `opacity ${FADE_MS / 1000}s`;
   titleScreen.style.opacity = '0';
@@ -24,7 +28,7 @@ titleScreen.addEventListener('click', () => {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     try {
       console.log('[STAYING ON TRACK] Starting game...');
-      const game = new Game();
+      const game = new Game(audioContext);
       (window as unknown as Record<string, unknown>).game = game;
     } catch (e) {
       console.error('[STAYING ON TRACK] Failed to start:', e);

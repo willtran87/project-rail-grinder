@@ -13,6 +13,7 @@
  * region), plus short one-off sounds ("events") scheduled at random times.
  */
 
+import { glide } from './glide';
 import type { Region } from '../types/rail';
 
 interface BedSettings {
@@ -106,8 +107,9 @@ export class Ambience {
       ? 1 - b.swellDepth * (0.5 + 0.5 * Math.sin((this.time / b.swellPeriod) * Math.PI * 2))
       : 1;
     const storm = 1 + rain * 0.8 + snow * 0.6;
-    this.bedGain.gain.setTargetAtTime(b.gain * swell * storm, now, 0.3);
-    this.rainGain.gain.setTargetAtTime(rain * 0.07, now, 0.5);
+    // (glide: only sent when the value moves, ≤20×/s — see glide.ts)
+    glide(this.bedGain.gain, b.gain * swell * storm, now, 0.3);
+    glide(this.rainGain.gain, rain * 0.07, now, 0.5);
 
     // Critters keep quiet in heavy weather
     const calm = Math.max(0, 1 - rain * 1.5 - snow);

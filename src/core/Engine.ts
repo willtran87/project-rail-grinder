@@ -280,7 +280,12 @@ export class Engine {
    * While it runs, the last frame stays on screen instead of the game
    * freezing for a second or more mid-play.
    */
-  prewarm(): void {
+  /**
+   * @param drawHidden - also do the off-screen warm-up draw (see warmDraw).
+   *   Worth it when a job loads; skipped for the G key, where it only made
+   *   the held picture last longer (~40 → ~150 ms).
+   */
+  prewarm(drawHidden = true): void {
     this.compiling = true;
     // Compile for the low-res target the scene is really drawn into: shaders
     // for the screen (tone mapped, sRGB) are different programs
@@ -290,7 +295,7 @@ export class Engine {
     this.renderer.setRenderTarget(previous);
     done
       .catch(() => { /* fall back to compiling on first draw */ })
-      .then(() => this.warmDraw())
+      .then(() => { if (drawHidden) this.warmDraw(); })
       .finally(() => { this.compiling = false; });
   }
 
@@ -391,6 +396,18 @@ export class Engine {
     }
   }
 
+  /**
+   * Extra chunkiness for the Low graphics preset: game pixels one step bigger
+   * (e.g. 3×3 screen pixels instead of 2×2 at 1080p, about 44% as many pixels
+   * to shade). On a weak GPU the pixel count is what costs the most.
+   */
+  setPixelBoost(boost: number): void {
+    if (boost === this.pixelBoost) return;
+    this.pixelBoost = boost;
+    this.onResize();
+  }
+  private pixelBoost = 0;
+
   private onResize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -401,7 +418,7 @@ export class Engine {
     this.renderer.setSize(w, h);
 
     // Resize the low-res render target too
-    const scale = pixelScaleFor(h);
+    const scale = pixelScaleFor(h) + this.pixelBoost;
     const lowW = Math.floor(w / scale);
     const lowH = Math.floor(h / scale);
     this.renderTarget.setSize(lowW, lowH);

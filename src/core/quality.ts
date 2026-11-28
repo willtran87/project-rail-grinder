@@ -4,7 +4,8 @@
  *   HIGH    everything on: bloom, 1024 shadows, ground mist, full dust,
  *           as many frames as the screen shows (144 on a 144 Hz monitor)
  *   MEDIUM  bloom on, softer 512 shadows, no mist, half dust, max 60 fps
- *   LOW     no bloom, no shadows, no mist, light dust, max 60 fps — for slower machines
+ *   LOW     no bloom, no shadows, no mist, light dust, max 60 fps, and chunkier
+ *           game pixels (one step bigger: ~44% as many to draw) — for slower machines
  *
  * The 60 fps cap matters on high-refresh screens: without it a 144 Hz
  * laptop draws every frame 2.4 times as often, for battery and fan noise.
@@ -23,12 +24,13 @@ export interface QualitySettings {
   mist: boolean;
   dustAmount: number;    // 0..1 multiplier on dust emission
   fpsCap: number;        // 0 = no cap (follow the screen's refresh rate)
+  pixelBoost: number;    // 0 = normal pixel size, 1 = one step chunkier (fewer pixels to draw)
 }
 
 export const QUALITY_PRESETS: Record<QualityLevel, QualitySettings> = {
-  high:   { bloom: true,  shadowMapSize: 1024, mist: true,  dustAmount: 1,    fpsCap: 0 },
-  medium: { bloom: true,  shadowMapSize: 512,  mist: false, dustAmount: 0.5,  fpsCap: 60 },
-  low:    { bloom: false, shadowMapSize: 0,    mist: false, dustAmount: 0.25, fpsCap: 60 },
+  high:   { bloom: true,  shadowMapSize: 1024, mist: true,  dustAmount: 1,    fpsCap: 0,  pixelBoost: 0 },
+  medium: { bloom: true,  shadowMapSize: 512,  mist: false, dustAmount: 0.5,  fpsCap: 60, pixelBoost: 0 },
+  low:    { bloom: false, shadowMapSize: 0,    mist: false, dustAmount: 0.25, fpsCap: 60, pixelBoost: 1 },
 };
 
 const ORDER: QualityLevel[] = ['high', 'medium', 'low'];

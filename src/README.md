@@ -51,6 +51,7 @@ src/
 │   └── GrindContact.ts      # Glowing contact point and ground trail
 ├── audio/
 │   ├── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
+│   ├── glide.ts             # Smooth, rate-limited sound parameter changes (no audio-engine flooding)
 │   └── Ambience.ts          # Per-route background sounds + crossing bell
 ├── ui/
 │   ├── TrackMap.ts           # Top-of-screen track progress strip
@@ -134,7 +135,7 @@ Every separate mesh is a draw call, and another one for the shadow map. The grin
 - `RailGrinder`: each car is baked. The 8 drop-down grind modules of each grinding car are merged into one piece that moves as a whole.
 - `PassingTrain`: each freight car is baked.
 - `Environment`: poles, signals, hills and mountains are baked; trees, bushes, rocks and grass are already instanced.
-- `Landmarks` uses its own version of the same idea, with the same shared per-vertex material for its plain colours.
+- `Landmarks` uses its own version of the same idea, with the same shared per-vertex material for its plain colours. Its moving parts (windmill wheel, cows and their heads, gate arms, cars, lighthouse beams) each have their own pieces merged too (`bakeMovingParts`), and crossing lamps that flash together share one material per crossing — prairie landmarks went from ~120 draw calls to ~30.
 - `SlowOrderSigns`: all posts, yellow faces and green faces are three `InstancedMesh`es; a spinning board just rewrites its two instance matrices.
 - `GrindContact`: the "freshly ground" trail markers are one `InstancedMesh` reused as a ring of 100 slots (it used to add a new mesh every 2 m).
 
@@ -216,7 +217,7 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 |--------|-------|---------|-------------|------|------------|
 | High   | on    | 1024²   | on          | 100% | screen's refresh rate |
 | Medium | on    | 512²    | off         | 50%  | max 60 fps |
-| Low    | off   | off     | off         | 25%  | max 60 fps |
+| Low    | off   | off     | off         | 25%  | max 60 fps, chunkier pixels |
 
 The 60 fps cap matters on high-refresh laptops: at 144 Hz the game would otherwise draw 2.4 times as many frames, for battery and fan noise.
 
@@ -224,19 +225,20 @@ The 60 fps cap matters on high-refresh laptops: at 144 Hz the game would otherwi
 
 Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame rate; "pass 2" cut the GPU load (for weaker machines) and the garbage that causes stutters.
 
-| | Original | Pass 1 | Pass 2 | Pass 3 |
-|---|---|---|---|---|
-| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) | 16.7 ms | 16.7 ms |
-| Renderer CPU per frame | 42.6 ms | ~5 ms | ~2.6 ms | ~2.1 ms |
-| GPU: scene / shadows (1080p) | — | 4.3 / 1.7 ms | 3.4 / 0.7 ms | 1.75 / 0.55 ms |
-| Draw calls per frame | ~6,700 | ~380 | ~145 | ~108 |
-| Lights | 11 | 8 | 5 | 5 |
-| Garbage while grinding | — | ~24 MB/s | ~9 MB/s | ~8 MB/s |
-| Slow laptop (CPU ×4 slower): typical / 95th-percentile frame | — | — | 27.9 / 49 ms | 21.9 / 34 ms |
-| Click → job menu | — | — | ~1.05 s | ~0.15–0.5 s |
-| Stall when grinding first starts | — | — | ~0.2 s | none |
-| First freight train | 4.7 s freeze | no freeze | no freeze | no freeze |
-| G key (shadows off) | 4 s freeze | ~40 ms | ~40 ms | ~40–150 ms (held frame) |
+| | Original | Pass 1 | Pass 2 | Pass 3 | Pass 4 |
+|---|---|---|---|---|---|
+| Frame time (driving) | 46 ms (~20 fps) | 16.7 ms (60 fps cap) | 16.7 ms | 16.7 ms | 16.7 ms |
+| Renderer CPU per frame | 42.6 ms | ~5 ms | ~2.6 ms | ~2.1 ms | ~2 ms |
+| GPU: scene / shadows (1080p) | — | 4.3 / 1.7 ms | 3.4 / 0.7 ms | 1.75 / 0.55 ms | 1.4 / 0.55 ms |
+| Draw calls per frame (Marias / prairie) | ~6,700 | ~380 | ~145 / ~230 | ~108 / ~196 | ~88 / ~110 |
+| Lights | 11 | 8 | 5 | 5 | 5 |
+| Garbage while grinding | — | ~24 MB/s | ~9 MB/s | ~8 MB/s | ~7 MB/s |
+| Slow laptop (CPU ×4 slower): typical / 95th-pct / worst frame | — | — | 27.9 / 49 / 129 ms | 21.9 / 34 / 88 ms | 18 / 25 / 33 ms |
+| Stutter with sound on (frames > 35 ms in 12 s) | — | — | — | 10–24 | 0 |
+| Click → job menu | — | — | ~1.05 s | ~0.15–0.5 s | ~0.15–0.5 s |
+| Stall when grinding first starts | — | — | ~0.2 s | none | none |
+| First freight train | 4.7 s freeze | no freeze | no freeze | no freeze | no freeze |
+| G key (shadows off) | 4 s freeze | ~40 ms | ~40 ms | ~40–150 ms | ~40 ms |
 
 - **Target**: 60fps on modern hardware at 1080p
 - **Draw calls are the thing to watch.** The FPS counter (backtick) shows draw calls and triangles per frame. If it jumps after you add something, the new object probably needs to be baked, instanced or given a shared material.
@@ -258,4 +260,11 @@ Measured in headless Chrome (RTX 3090) on Marias Pass. "Pass 1" fixed the frame 
 - **Page (HTML) stalls**: the browser's GPU also draws the HTML interface and 2D canvases, and the first time it draws a *new kind* of shape it builds a drawing pipeline (up to ~0.3 s). The heat bar used to be a rounded fill clipped by a rounded box — a combination nothing else on the page uses — which stalled the game ~0.4 s into the first grind. The fill is rounded itself now, with no clip. Floating score popups animate only `transform` and `opacity`, so their glow is painted once instead of every frame.
 - **Profile displays**: the plot's height range snaps to 0.5 mm steps, so the grid and its ~20 text labels are drawn once into an off-screen canvas and reused (canvas text was the biggest cost on slow laptops).
 - **Bundle**: three.js is already tree-shaken (unused parts such as loaders, animation and raycasting are left out). What remains is the WebGL renderer and its shader code.
+- **Audio** (all sound is synthesized live, so the audio engine does real work):
+  - Parameters are changed through `audio/glide.ts`: only when the value really moves, at most 20 times a second, with smoothing. Scheduling a new ramp on ~10 parameters every frame (and `stopGrinding()` fading three gains every frame while *not* grinding) made the game stutter while grinding with sound on.
+  - Wheel clicks re-trigger one permanent voice instead of creating three audio nodes per click.
+  - One shared noise buffer (wind, grinding grit, ambience), and the grinding sound is built at audio start-up rather than on the first grind.
+  - The audio device (~90 ms to open) is opened on the title click and kept paused, so picking a job doesn't hitch; the menu stays silent as before.
+- **Low preset** also makes the game pixels one step chunkier (`pixelBoost`) — on a weak GPU the number of pixels is the main cost.
+- **Not done, on purpose**: merging the three ground-mist layers (they cost ~0.01 ms of GPU and their separate heights give the mist depth), and caching the static part of the shadow map (the shadow box follows the camera, so a cache would be invalid nearly every frame; the whole pass is ~0.55 ms).
 - **Particle count**: 800 sparks + 300 dust puffs + 2000 rain streaks or 1600 snowflakes (when falling)
