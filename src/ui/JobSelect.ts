@@ -10,6 +10,11 @@ import {
   loadMuseum, PHOTO_CHALLENGES, loadPhotos, claimLogin, session, type ModifierId, type CrewId, type MachineId, type LoginState,
 } from '../game/engage';
 import { currentGoal } from '../game/meta';
+import {
+  currentEvent, loadEventRewards, EVENTS, loadMastery, masteryLevel, MASTERY_LEVELS, MASTERY_UNLOCKS, routeCode, parseRouteCode,
+  loadBadges, BADGES, loadLadder, LADDER_RUNG_PAY, LADDER_TOP_PAY, loadCustomPaint, saveCustomPaint, type Badge,
+} from '../game/loop';
+import { weekKey } from '../game/engage';
 import * as THREE from 'three';
 import type { Region } from '../types/rail';
 import { loadRecords, formatTime, type JobRecord } from '../game/progress';
@@ -34,6 +39,10 @@ import {
 export interface JobDefinition {
   /** Opt-in risks (random routes, weekly challenge), each raising the pay */
   modifiers?: ModifierId[];
+  /** Hold the weather at this strength all job (Storm variants, 0..1) */
+  forceWeather?: number;
+  /** Shareable code for a random route (see game/loop.ts) */
+  code?: string;
   id: string;
   name: string;
   location: string;
@@ -229,6 +238,69 @@ export const JOBS: JobDefinition[] = [
       new THREE.Vector3(35, 0, 645),
     ],
   },
+  {
+    id: 'mojave',
+    region: 'desert',
+    name: 'BNSF Needles Sub — Mojave',
+    location: 'California / Arizona',
+    description: 'The Southern Transcon across the Mojave Desert: long, blistering straights past mesas and dry washes. Heat and blown sand flatten the crown; dry brush means fire risk whenever the stones run hot.',
+    difficulty: 'Hard',
+    basePay: 15000,
+    starsToUnlock: 15,
+    difficultyColor: '#e08a3a',
+    trackLength: '370m',
+    sections: 16,
+    defectSeverity: 0.85,
+    timeOfDay: 1,
+    trackPoints: [
+      new THREE.Vector3(0, 0, -10), new THREE.Vector3(0, 0, 40), new THREE.Vector3(2, 0, 100), new THREE.Vector3(6, 0, 160),
+      new THREE.Vector3(8, 0, 220), new THREE.Vector3(6, 0, 280), new THREE.Vector3(3, 0, 340), new THREE.Vector3(2, 0, 400),
+      new THREE.Vector3(2, 0, 460), new THREE.Vector3(2, 0, 520),
+    ],
+  },
+  {
+    id: 'cascade',
+    region: 'forest',
+    name: 'BNSF Scenic Sub — Stevens Pass',
+    location: 'Washington',
+    description: 'Through the Cascades toward the Cascade Tunnel: wet rail, tight curves and towering firs. Gauge-side wear on every curve, and a timber trestle-era bridge over the Skykomish.',
+    difficulty: 'Expert',
+    basePay: 20000,
+    starsToUnlock: 19,
+    difficultyColor: '#3aa86a',
+    trackLength: '450m',
+    sections: 20,
+    defectSeverity: 1.0,
+    timeOfDay: 0,
+    trackPoints: [
+      new THREE.Vector3(0, 0, -10), new THREE.Vector3(0, 0, 30), new THREE.Vector3(4, 0, 70), new THREE.Vector3(14, 0, 105),
+      new THREE.Vector3(28, 0, 135), new THREE.Vector3(36, 0, 170), new THREE.Vector3(34, 0, 210), new THREE.Vector3(24, 0, 245),
+      new THREE.Vector3(16, 0, 280), new THREE.Vector3(16, 0, 320), new THREE.Vector3(24, 0, 355), new THREE.Vector3(32, 0, 390),
+      new THREE.Vector3(34, 0, 430), new THREE.Vector3(34, 0, 490), new THREE.Vector3(34, 0, 560), new THREE.Vector3(34, 0, 620),
+    ],
+  },
+  {
+    id: 'pocahontas',
+    region: 'appalachia',
+    name: 'NS Pocahontas District — Coal Line',
+    location: 'West Virginia',
+    description: 'Loaded coal trains grind up the hollows of southern West Virginia. Twisting grades, tipples and tunnels; heavy axle loads leave corrugation and gauge-face damage everywhere.',
+    difficulty: 'Expert',
+    basePay: 22000,
+    starsToUnlock: 24,
+    difficultyColor: '#8a7ad8',
+    trackLength: '490m',
+    sections: 22,
+    defectSeverity: 1.05,
+    timeOfDay: 2,
+    trackPoints: [
+      new THREE.Vector3(0, 0, -10), new THREE.Vector3(0, 0, 30), new THREE.Vector3(-6, 0, 70), new THREE.Vector3(-16, 0, 100),
+      new THREE.Vector3(-20, 0, 135), new THREE.Vector3(-14, 0, 170), new THREE.Vector3(-2, 0, 200), new THREE.Vector3(8, 0, 235),
+      new THREE.Vector3(10, 0, 275), new THREE.Vector3(2, 0, 310), new THREE.Vector3(-8, 0, 345), new THREE.Vector3(-10, 0, 385),
+      new THREE.Vector3(-4, 0, 420), new THREE.Vector3(4, 0, 455), new THREE.Vector3(6, 0, 500), new THREE.Vector3(6, 0, 570),
+      new THREE.Vector3(6, 0, 640),
+    ],
+  },
 ];
 
 // Accurate continental US outline as [longitude, latitude] pairs
@@ -271,11 +343,14 @@ const LAKES: [number, number][][] = [
 ];
 
 // Job locations as [longitude, latitude]
-const JOB_LOCATIONS: Record<string, { lon: number; lat: number; routeAngle: number }> = {
+const JOB_LOCATIONS: Record<string, { lon: number; lat: number; routeAngle: number; dy?: number; side?: 'left' | 'right' }> = {
   transcon: { lon: -96.5, lat: 38.5, routeAngle: 0 },        // Emporia, Kansas
   marias:   { lon: -113.3, lat: 48.3, routeAngle: -0.3 },     // Marias Pass, Montana
   clearing: { lon: -87.8, lat: 41.8, routeAngle: 0.5 },       // Chicago, Illinois
-  coast:    { lon: -120.5, lat: 35.2, routeAngle: -1.2 },      // San Luis Obispo, California
+  coast:    { lon: -120.5, lat: 35.2, routeAngle: -1.2, dy: -14 }, // San Luis Obispo, California
+  mojave:   { lon: -114.6, lat: 34.8, routeAngle: 0.1, dy: 16 }, // Needles, California
+  cascade:  { lon: -121.1, lat: 47.7, routeAngle: -0.4, dy: 26 }, // Stevens Pass, Washington
+  pocahontas: { lon: -81.6, lat: 37.4, routeAngle: 0.6, dy: 20, side: 'left' }, // Welch, West Virginia
 };
 
 export class JobSelect {
@@ -328,6 +403,80 @@ export class JobSelect {
     };
   }
 
+  /**
+   * The one contract to play next, and why: the "continue" button on the
+   * title screen and the UP NEXT card both use it, so there's always one
+   * obvious thing to do. In order: a long haul in progress, today's daily,
+   * a contract you've never finished, your weakest contract, a neglected
+   * route, else a fresh random route.
+   */
+  static recommend(): { job: JobDefinition; why: string } {
+    const records = loadRecords();
+    const stars = totalBestStars(records);
+    const unlocked = JOBS.filter((j) => isUnlocked(j.starsToUnlock, stars));
+    const haul = loadLongHaul();
+    if (haul.shift > 0) return { job: JobSelect.longHaulJob(stars), why: `Long haul: shift ${haul.shift + 1} of ${LONG_HAUL_SHIFTS} is waiting` };
+    const daily = dailyRoute();
+    const s = loadStats();
+    if (s.jobs >= 2 && !records[daily.id]) {
+      const streak = s.lastDaily === dayKey(-1) ? s.dailyStreak : 0;
+      return { job: JobSelect.routeToJob(daily), why: streak > 0 ? `Today's daily — keep your ${streak}-day streak` : "Today's daily contract — same route for everyone" };
+    }
+    const ev = currentEvent();
+    if (s.jobs >= 3 && !loadEventRewards().includes(ev.livery.id)) {
+      return { job: JobSelect.eventJob(stars), why: `${ev.name}: 3★ earns ${ev.livery.name} paint (this season only)` };
+    }
+    const fresh = unlocked.find((j) => !records[j.id]);
+    if (fresh) return { job: fresh, why: fresh.starsToUnlock > 0 ? 'Newly unlocked contract' : 'Your first contract' };
+    const locked = JOBS.find((j) => !isUnlocked(j.starsToUnlock, stars));
+    const weakest = [...unlocked].sort((a, b) => records[a.id].bestStars - records[b.id].bestStars)[0];
+    if (weakest && records[weakest.id].bestStars < 5) {
+      const why = locked ? `${locked.starsToUnlock - stars} more ★ unlocks ${locked.name.split(' — ')[0]} — best here ${records[weakest.id].bestStars}★`
+        : `Your best here is ${records[weakest.id].bestStars}★ — go for ${records[weakest.id].bestStars + 1}`;
+      return { job: weakest, why };
+    }
+    const worn = unlocked.find((j) => (routeCondition(j.id) ?? 100) < 70);
+    if (worn) return { job: worn, why: `Track condition ${routeCondition(worn.id)}% — it needs maintenance` };
+    const seed = Math.floor(Math.random() * 1e9);
+    return { job: JobSelect.routeToJob(generateRoute(seed, stars)), why: 'Every contract at 5★ — a fresh random route' };
+  }
+
+  /**
+   * A new player's first three contracts are short "first shifts" (4, 5, 6
+   * sections, lighter damage), so the first ten minutes end in a win.
+   */
+  static firstShift(job: JobDefinition, jobsDone: number): JobDefinition {
+    if (jobsDone >= 3 || !JOBS.includes(job)) return job;
+    const sections = Math.min(job.sections, 4 + jobsDone);
+    return {
+      ...job, sections, defectSeverity: job.defectSeverity * 0.75,
+      basePay: Math.round(job.basePay * sections / job.sections),
+      name: `${job.name} · first shift`, trackLength: `${sections * 20 + 110}m`,
+    };
+  }
+
+  /** This season's event route (one per event per week), as a job */
+  static eventJob(totalStars: number): JobDefinition {
+    const ev = currentEvent();
+    const week = weekKey();
+    let h = 2166136261;
+    for (const c of ev.id + week) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+    const r = generateRoute(h % 1000000000, totalStars + 5, 'random', ev.regions);
+    const job = JobSelect.routeToJob(r);
+    job.id = `event-${ev.id}-${week}`;
+    job.name = `${ev.name} — ${r.name}`;
+    job.modifiers = [...ev.modifiers];
+    job.basePay = Math.round(r.basePay * ev.pay / 100) * 100;
+    if (ev.id === 'winter') job.forceWeather = 0.8;
+    return job;
+  }
+
+  /** This week's ladder (routes picked from the contracts you've unlocked) */
+  private ladder(totalStars: number) {
+    const unlocked = JOBS.filter((j) => isUnlocked(j.starsToUnlock, totalStars)).map((j) => j.id);
+    return loadLadder(weekKey(), unlocked);
+  }
+
   /** This shift of the long-haul contract, as a job */
   static longHaulJob(totalStars: number): JobDefinition {
     const h = loadLongHaul();
@@ -341,11 +490,14 @@ export class JobSelect {
   }
 
   /** Which tab of the contract screen is showing */
-  tab: 'contracts' | 'modes' | 'upgrades' | 'depot' = 'contracts';
+  tab: 'contracts' | 'modes' | 'shop' = 'contracts';
   /** Modifiers the player has switched on for the random route */
   private selectedMods: ModifierId[] = [];
   /** Login reward shown in the header this visit (set once a day) */
   private loginNote = '';
+
+  /** The UP NEXT card's job (see recommend) */
+  private upNext: JobDefinition | null = null;
 
   /** Seed for the "random route" card (re-rolled with the button) */
   private randomSeed = Math.floor(Math.random() * 1e9);
@@ -359,8 +511,28 @@ export class JobSelect {
     const rnd = generateRoute(this.randomSeed, totalStars);
     const card = `background: rgba(255,170,0,0.06); border: 1px solid rgba(255,170,0,0.3); border-radius: 8px;
       padding: 14px 16px; cursor: pointer;`;
+    const ev = currentEvent();
+    const evDone = loadEventRewards().includes(ev.livery.id);
+    const ladder = this.ladder(totalStars);
+    const evRoute = JobSelect.eventJob(totalStars);
     return `
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+        <div data-mode="event" style="${card} border-color: rgba(255,120,200,0.5); background: rgba(255,120,200,0.06);">
+          <div style="font-size: 10px; letter-spacing: 3px; color: #ff88cc;">SEASONAL EVENT · ${ev.name.toUpperCase()}</div>
+          <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">${evRoute.name.split(' — ')[1] ?? evRoute.name}</div>
+          <div style="font-size: 11px; color: #888; margin-top: 2px;">${evRoute.location} · ${evRoute.sections} sections · pay ×${ev.pay}</div>
+          <div style="font-size: 11px; color: #bbb; margin-top: 6px;">${ev.blurb}</div>
+          <div style="font-size: 11px; margin-top: 6px; color: ${evDone ? '#7dff8a' : '#ffcc77'};">${evDone ? `✓ Earned: ${ev.livery.name} paint + ${ev.find.name}`
+            : `3★ or better earns <b>${ev.livery.name}</b> paint and a museum find (this season only)`}</div>
+        </div>
+        <div style="${card} cursor: default; border-color: rgba(125,255,138,0.35); background: rgba(125,255,138,0.04);">
+          <div style="font-size: 10px; letter-spacing: 3px; color: #7dff8a;">WEEKLY LADDER · ${ladder.week}</div>
+          <div style="font-size: 11px; color: #aaa; margin: 4px 0 6px;">Beat your own best pay on each route this week</div>
+          ${ladder.routes.map((id) => { const j = JOBS.find((x) => x.id === id); const best = loadBoard(id)[0]; const done = ladder.done.includes(id);
+            return `<div style="font-size: 12px; margin: 3px 0; color: ${done ? '#7dff8a' : '#ddd'};">${done ? '✓' : '○'} ${j ? j.name.split(' — ')[0] : id}
+              <span style="color:#888; font-size: 11px;">${done ? 'done' : best ? `beat ${formatMoney(best.score)}` : 'finish it once'}</span></div>`; }).join('')}
+          <div style="font-size: 11px; color: #ffcc77; margin-top: 6px;">${formatMoney(LADDER_RUNG_PAY)} a rung · all three +${formatMoney(LADDER_TOP_PAY)} and a streak saver</div>
+        </div>
         <div data-mode="daily" style="${card}">
           <div style="font-size: 10px; letter-spacing: 3px; color: #ffaa00;">DAILY CONTRACT · ${todayKey()}</div>
           <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">${daily.name.replace('Daily Contract — ', '')}</div>
@@ -387,6 +559,14 @@ export class JobSelect {
               ${MODIFIERS[id].name} ×${MODIFIERS[id].pay}</button>`; }).join('')}
           </div>
           ${this.selectedMods.length ? `<div style="font-size: 11px; color: #ff8844; margin-top: 4px;">Risk pay ×${modifierPay(this.selectedMods)}</div>` : ''}
+          <div style="font-size: 11px; color: #8ad0ff; margin-top: 8px;" title="Send this code to a friend: they can play exactly this route">
+            ROUTE CODE <b data-code style="user-select: all;">${routeCode(this.randomSeed, this.selectedMods)}</b></div>
+          <div style="display:flex; gap: 4px; margin-top: 6px;">
+            <input data-code-input placeholder="Enter a friend's code" maxlength="16" style="flex:1; min-width: 0; font-size: 11px; padding: 4px 6px;
+              background: #0b0d14; color: #ddd; border: 1px solid #444; border-radius: 4px; text-transform: uppercase;">
+            <button data-code-go style="font-size: 11px; padding: 4px 8px; border-radius: 4px; cursor: pointer; background: rgba(138,208,255,0.15);
+              color: #8ad0ff; border: 1px solid #8ad0ff;">PLAY</button>
+          </div>
         </div>
         ${(() => {
           const w = weeklyChallenge();
@@ -411,8 +591,7 @@ export class JobSelect {
         <button data-practice title="A short test track: one section of each kind of damage, no deadline, no pay"
           style="background: rgba(120,200,255,0.06); color: #cfe8ff; border: 1px solid rgba(120,200,255,0.3);
           border-radius: 8px; padding: 0 14px; cursor: pointer; font-size: 12px; letter-spacing: 2px;">PRACTICE<br>YARD</button>
-        <button data-career style="background: rgba(255,255,255,0.05); color: #ddd; border: 1px solid rgba(255,255,255,0.15);
-          border-radius: 8px; padding: 0 18px; cursor: pointer; font-size: 12px; letter-spacing: 2px;">CAREER<br>&amp;<br>RECORDS</button>
+
       </div>`;
   }
 
@@ -471,6 +650,29 @@ export class JobSelect {
               <div style="font-size: 11px; margin-top: 5px;">${l.name}</div>
               <div style="font-size: 9px; color: #888;">${ok ? (sel ? 'IN USE' : 'Unlocked') : '🔒 ' + l.unlockText}</div></div>`; }).join('')}
         </div>
+        ${(() => {
+          const paint = loadCustomPaint();
+          const canCustom = rankFor(progress.stars).index >= 1;
+          const evLiveries = EVENTS.filter((e) => loadEventRewards().includes(e.livery.id));
+          return `<div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">CUSTOM PAINT & NUMBER ${canCustom ? '' : '· 🔒 reach rank Operator'}</div>
+          <div style="display:flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; opacity: ${canCustom ? 1 : 0.45};">
+            <label style="font-size: 11px; color:#aaa;">Body <input type="color" data-paint="body" value="${paint.body}" ${canCustom ? '' : 'disabled'}></label>
+            <label style="font-size: 11px; color:#aaa;">Trim <input type="color" data-paint="trim" value="${paint.trim}" ${canCustom ? '' : 'disabled'}></label>
+            <label style="font-size: 11px; color:#aaa;">Number <input data-paint="number" value="${paint.number}" maxlength="4" ${canCustom ? '' : 'disabled'}
+              style="width: 52px; background:#0b0d14; color:#ddd; border:1px solid #444; padding: 3px;"></label>
+            <label style="font-size: 11px; color:#aaa;">Crew name <input data-paint="crew" value="${paint.crew}" maxlength="24" placeholder="e.g. Night Owls" ${canCustom ? '' : 'disabled'}
+              style="width: 150px; background:#0b0d14; color:#ddd; border:1px solid #444; padding: 3px;"></label>
+            <button data-paint-use ${canCustom ? '' : 'disabled'} style="font-size: 11px; padding: 5px 10px; border-radius: 4px; cursor: pointer;
+              background: ${current.id === 'custom' ? '#ffaa00' : 'rgba(255,170,0,0.15)'}; color: ${current.id === 'custom' ? '#000' : '#ffcc77'}; border: 1px solid #ffaa00;">
+              ${current.id === 'custom' ? 'IN USE' : 'USE CUSTOM PAINT'}</button>
+          </div>
+          <div style="font-size: 10px; color: #777; margin-bottom: 22px;">Your number and crew name go on the share card.</div>
+          ${evLiveries.length ? `<div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">EVENT PAINT</div>
+          <div style="display:flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px;">${evLiveries.map((e) => `<div data-livery="${e.livery.id}" data-ok="true"
+            style="width: 118px; cursor: pointer; border: 2px solid ${current.id === e.livery.id ? '#ffaa00' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; padding: 8px;">
+            <div style="height: 22px; border-radius: 3px; background: ${e.livery.body}; box-shadow: inset 0 -6px 0 #${e.livery.trim.toString(16).padStart(6, '0')};"></div>
+            <div style="font-size: 11px; margin-top: 5px;">${e.livery.name}</div><div style="font-size: 9px; color: #888;">${e.name}</div></div>`).join('')}</div>` : ''}`;
+        })()}
         <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">RANK</div>
         <div style="display:flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px;">
           ${RANKS.map((r, i) => { const here = rankFor(progress.stars).index; return `<div style="border: 1px solid ${i === here ? '#8ad0ff' : 'rgba(255,255,255,0.08)'};
@@ -484,6 +686,8 @@ export class JobSelect {
             <div style="font-size: 10px; color: #777; margin-bottom: 6px;">Something glints by the rail? Look with camera 5 (grind) as you pass.</div>
             ${COLLECTIBLES.map((c) => { const got = loadMuseum().includes(c.id); return `<div style="padding: 3px 0; font-size: 12px; opacity: ${got ? 1 : 0.4};">
               ${got ? '🏺' : '·'} ${got ? c.name : '???'} ${got ? `<span style="font-size: 10px; color: #888;">— ${c.note}</span>` : ''}</div>`; }).join('')}
+            ${EVENTS.filter((e) => loadEventRewards().includes(e.find.id)).map((e) => `<div style="padding: 3px 0; font-size: 12px; color: #ff88cc;">
+              ★ ${e.find.name} <span style="font-size: 10px; color: #888;">— ${e.find.note} (${e.name})</span></div>`).join('')}
           </div>
           <div>
             <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">PHOTO CHALLENGES · ${loadPhotos().length}/${Object.keys(PHOTO_CHALLENGES).length}</div>
@@ -506,6 +710,21 @@ export class JobSelect {
         </div>
       </div>`;
     this.overlay.querySelector('[data-back]')!.addEventListener('click', () => this.render(resolve));
+    // Custom paint editor
+    const readPaint = () => {
+      const v = (k: string) => this.overlay.querySelector<HTMLInputElement>(`[data-paint="${k}"]`)?.value ?? '';
+      saveCustomPaint({ body: v('body'), trim: v('trim'), number: v('number'), crew: v('crew') });
+    };
+    this.overlay.querySelectorAll<HTMLInputElement>('[data-paint]').forEach((el) => el.addEventListener('change', () => {
+      readPaint();
+      if (selectedLivery().id === 'custom') this.onLiveryChange?.();
+    }));
+    this.overlay.querySelector('[data-paint-use]')?.addEventListener('click', () => {
+      readPaint();
+      selectLivery('custom');
+      this.onLiveryChange?.();
+      this.renderCareer(resolve);
+    });
     this.overlay.querySelectorAll<HTMLElement>('[data-livery]').forEach((el) => el.addEventListener('click', () => {
       if (el.dataset.ok !== 'true') return;
       selectLivery(el.dataset.livery!);
@@ -519,6 +738,34 @@ export class JobSelect {
 
   /** Game hooks this to repaint the grinder when a new livery is picked */
   onLiveryChange: (() => void) | null = null;
+
+  /**
+   * A contract's mastery: level bar, what the next level unlocks, its badges
+   * (each worth a career star) and the variant buttons it has earned.
+   */
+  private masteryHTML(jobId: string): string {
+    const stars = loadMastery()[jobId] ?? 0;
+    const level = masteryLevel(stars);
+    const next = MASTERY_LEVELS[level];
+    const lo = MASTERY_LEVELS[level - 1];
+    const frac = next === undefined ? 1 : (stars - lo) / (next - lo);
+    const have = loadBadges()[jobId] ?? [];
+    const badge = (b: Badge) => `<span title="${BADGES[b].name}: ${BADGES[b].how} (+1 career star)" style="font-size: 10px; padding: 1px 6px;
+      border-radius: 8px; border: 1px solid ${have.includes(b) ? '#ffd84a' : '#444'}; color: ${have.includes(b) ? '#ffd84a' : '#666'};">${
+      { night: '🌙', noFast: '⏱', speed: '⚡' }[b]} ${BADGES[b].name}</span>`;
+    const btn = (variant: string, label: string, ok: boolean) => ok ? `<button data-variant="${variant}" data-job-id="${jobId}" style="font-size: 10px;
+      padding: 3px 8px; border-radius: 4px; cursor: pointer; border: 1px solid #ff8844; background: rgba(255,136,68,0.15); color: #ffbb88;">${label}</button>` : '';
+    return `<div style="margin: -4px 0 12px;" data-stop>
+      <div style="display:flex; align-items:center; gap: 8px; font-size: 10px; color: #aaa;">
+        <span style="color:#ffcc55; letter-spacing: 1px;">MASTERY ${level}</span>
+        <div style="flex:1; height: 5px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden;">
+          <div style="width: ${Math.round(frac * 100)}%; height: 100%; background: #ffcc55;"></div></div>
+        <span>${next === undefined ? 'MAX' : `${stars}/${next}★ → ${MASTERY_UNLOCKS[level]}`}</span>
+      </div>
+      <div style="display:flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">${(['night', 'noFast', 'speed'] as Badge[]).map(badge).join('')}
+        ${btn('storm', '⛈ STORM', level >= 2)} ${btn('hard', '☠ HARD +30%', level >= 3)}</div>
+    </div>`;
+  }
 
   /** Career summary + upgrade shop, shown under the job cards */
   /** Depot: hire crew (perks) and buy / pick a grinding machine */
@@ -580,7 +827,9 @@ export class JobSelect {
   }
 
   /** Show job selection and return the chosen job */
-  show(): Promise<JobDefinition> {
+  /** @param auto - skip the menu and take this job straight away (CONTINUE on the title screen) */
+  show(auto?: JobDefinition): Promise<JobDefinition> {
+    if (auto) { this.claimLoginReward(); return Promise.resolve(auto); }
     return new Promise((resolve) => this.render(resolve));
   }
 
@@ -615,13 +864,28 @@ export class JobSelect {
               &nbsp;·&nbsp; <span style="color: #ffdd00;">★ ${totalStars}</span> career stars
               &nbsp;·&nbsp; <span style="color: #8ad0ff;" title="Perk: ${rankFor(totalStars).rank.perk}">${rankFor(totalStars).rank.name.toUpperCase()}</span>
             </div>
+            <div style="margin-top: 4px; font-size: 10px; color: #777;" title="Money and stars do different jobs">
+              <span style="color:#44cc44">$</span> buys upgrades, crew and machines in the Shop ·
+              <span style="color:#ffdd00">★</span> (your best stars on each contract) unlocks contracts and raises your rank</div>
             ${(() => { const g = currentGoal(); return g ? `<div style="margin-top: 6px; font-size: 12px; color: #ffcc77;">NEXT GOAL: ${g}</div>` : ''; })()}
             ${this.loginNote ? `<div style="margin-top: 6px; font-size: 12px; color: #7dff8a;">${this.loginNote}</div>` : ''}
             ${session.jobs > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #999;">THIS SESSION: ${session.jobs} job${session.jobs > 1 ? 's' : ''}
               · ${formatMoney(session.earned)} · ${session.perfects} perfect passes${session.achievements ? ` · ${session.achievements} achievement${session.achievements > 1 ? 's' : ''}` : ''}${session.collectibles ? ` · ${session.collectibles} find${session.collectibles > 1 ? 's' : ''}` : ''}</div>` : ''}
           </div>
-          <div id="job-tabs" style="display: flex; gap: 6px; justify-content: center; margin-bottom: 18px;">
-            ${([['contracts', 'CONTRACTS'], ['modes', 'DAILY · WEEKLY · RANDOM'], ['upgrades', 'UPGRADES'], ['depot', 'DEPOT']] as const).map(([id, name]) =>
+          ${(() => { const r = JobSelect.recommend(); this.upNext = r.job; return `
+          <div data-upnext style="display:flex; align-items:center; gap: 16px; margin: 0 auto 18px; max-width: 640px; cursor: pointer;
+            background: linear-gradient(90deg, rgba(255,170,0,0.16), rgba(255,170,0,0.04)); border: 1px solid rgba(255,170,0,0.55);
+            border-radius: 10px; padding: 14px 18px;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 10px; letter-spacing: 3px; color: #ffaa00;">UP NEXT</div>
+              <div style="font-size: 17px; font-weight: 700; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.job.name}</div>
+              <div style="font-size: 12px; color: #ccc; margin-top: 2px;">${r.why}</div>
+            </div>
+            <button data-upnext-go style="background: #ffaa00; color: #000; border: none; border-radius: 6px; padding: 12px 22px;
+              font-size: 14px; font-weight: 700; letter-spacing: 2px; cursor: pointer;">PLAY ▶</button>
+          </div>`; })()}
+          <div id="job-tabs" style="display: flex; gap: 6px; justify-content: center; margin-bottom: 18px; flex-wrap: wrap;">
+            ${([['contracts', 'CONTRACTS'], ['modes', 'MORE WORK'], ['shop', 'SHOP'], ['career', 'CAREER']] as const).map(([id, name]) =>
               `<button data-tab="${id}" style="font-size: 12px; letter-spacing: 2px; padding: 8px 16px; border-radius: 4px; cursor: pointer;
                 border: 1px solid rgba(255,170,0,0.4); background: ${this.tab === id ? '#ffaa00' : 'rgba(255,170,0,0.06)'};
                 color: ${this.tab === id ? '#000' : '#ffcc77'};">${name}</button>`).join('')}
@@ -663,6 +927,7 @@ export class JobSelect {
             <div style="font-size: 12px; color: #888; line-height: 1.6; margin-bottom: 12px;">
               ${job.description}
             </div>
+            ${unlocked && records[job.id] ? this.masteryHTML(job.id) : ''}
             <div style="display: flex; gap: 16px; font-size: 11px; color: #666; flex-wrap: wrap;">
               <div><span style="color: #aaa;">${job.trackLength}</span> track</div>
               <div><span style="color: #aaa;">${job.sections}</span> sections</div>
@@ -673,8 +938,9 @@ export class JobSelect {
         `;
       }
 
-      html += `</div></div><div data-pane="upgrades" style="display: ${this.tab === 'upgrades' ? 'block' : 'none'};">${this.upgradesHTML(career)}</div>
-        <div data-pane="depot" style="display: ${this.tab === 'depot' ? 'block' : 'none'};">${this.depotHTML(career.money)}</div></div>`;
+      html += `</div></div><div data-pane="shop" style="display: ${this.tab === 'shop' ? 'block' : 'none'};">
+        <div style="text-align:center; font-size: 12px; color: #aaa; margin-bottom: 6px;">You have <b style="color:#44cc44">${formatMoney(career.money)}</b> to spend</div>
+        ${this.upgradesHTML(career)}<div style="height: 26px;"></div>${this.depotHTML(career.money)}</div></div>`;
       this.overlay.innerHTML = html;
       this.overlay.style.display = 'flex';
 
@@ -690,6 +956,35 @@ export class JobSelect {
         });
       });
 
+      // Mastery variants (Storm / Hard) — don't also trigger the card
+      this.overlay.querySelectorAll<HTMLButtonElement>('[data-variant]').forEach((b) => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const base = JOBS.find((j) => j.id === b.dataset.jobId)!;
+        const job: JobDefinition = b.dataset.variant === 'storm'
+          ? { ...base, name: `${base.name} · Storm`, forceWeather: 0.85 }
+          : { ...base, name: `${base.name} · Hard`, defectSeverity: base.defectSeverity * 1.25, basePay: Math.round(base.basePay * 1.3) };
+        this.overlay.style.display = 'none';
+        resolve(job);
+      }));
+      this.overlay.querySelectorAll<HTMLElement>('[data-stop]').forEach((el) => el.addEventListener('click', (e) => e.stopPropagation()));
+      // Seasonal event route
+      this.overlay.querySelector('[data-mode="event"]')?.addEventListener('click', () => {
+        this.overlay.style.display = 'none';
+        resolve(JobSelect.eventJob(totalStars));
+      });
+      // Route codes: play a friend's random route
+      const codeInput = this.overlay.querySelector<HTMLInputElement>('[data-code-input]');
+      codeInput?.addEventListener('click', (e) => e.stopPropagation());
+      this.overlay.querySelector('[data-code-go]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const parsed = parseRouteCode(codeInput?.value ?? '');
+        if (!parsed) { if (codeInput) { codeInput.value = ''; codeInput.placeholder = 'Not a route code (RG-…)'; } return; }
+        const job = JobSelect.routeToJob(generateRoute(parsed.seed, totalStars));
+        job.modifiers = parsed.mods;
+        job.code = routeCode(parsed.seed, parsed.mods);
+        this.overlay.style.display = 'none';
+        resolve(job);
+      });
       // Daily contract / random route / career page
       this.overlay.querySelector('[data-mode="daily"]')?.addEventListener('click', () => {
         this.overlay.style.display = 'none';
@@ -736,6 +1031,7 @@ export class JobSelect {
         this.overlay.style.display = 'none';
         const job = JobSelect.routeToJob(generateRoute(this.randomSeed, totalStars));
         job.modifiers = [...this.selectedMods];
+        job.code = routeCode(this.randomSeed, this.selectedMods);
         resolve(job);
       });
       this.overlay.querySelector('[data-mode="longhaul"]')?.addEventListener('click', () => {
@@ -748,9 +1044,15 @@ export class JobSelect {
       });
       this.overlay.querySelector('[data-career]')?.addEventListener('click', () => this.renderCareer(resolve));
       this.overlay.querySelectorAll<HTMLButtonElement>('#job-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => {
+        if (b.dataset.tab === 'career') { this.renderCareer(resolve); return; }
         this.tab = b.dataset.tab as typeof this.tab;
         this.render(resolve);
       }));
+      this.overlay.querySelector('[data-upnext]')?.addEventListener('click', () => {
+        if (!this.upNext) return;
+        this.overlay.style.display = 'none';
+        resolve(this.upNext);
+      });
       this.overlay.querySelector('[data-practice]')?.addEventListener('click', () => {
         this.overlay.style.display = 'none';
         resolve(PRACTICE_JOB);
@@ -813,6 +1115,7 @@ export class JobSelect {
     // Job locations
     const jobColors: Record<string, string> = {
       transcon: '#44cc44', marias: '#ccaa22', clearing: '#dd6622', coast: '#dd2244',
+      mojave: '#e08a3a', cascade: '#3aa86a', pocahontas: '#8a7ad8',
     };
 
     for (const job of JOBS) {
@@ -853,15 +1156,18 @@ export class JobSelect {
       ctx.fill();
 
       // Label
-      const leftSide = cx < w / 2;
+      // (labels go right of the dot in the west, left in the east; some are
+      // nudged up or down so neighbours don't overlap)
+      const leftSide = loc.side ? loc.side === 'right' : cx < w / 2;
+      const ly = cy + (loc.dy ?? 0);
       ctx.fillStyle = color;
       ctx.font = '600 10px Inter, sans-serif';
       ctx.textAlign = leftSide ? 'left' : 'right';
       const lx = leftSide ? cx + 16 : cx - 16;
-      ctx.fillText(job.name.split('—')[0].trim(), lx, cy - 6);
+      ctx.fillText(job.name.split('—')[0].trim(), lx, ly - 6);
       ctx.font = '9px Inter, sans-serif';
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      ctx.fillText(job.location + ' · ' + job.difficulty, lx, cy + 6);
+      ctx.fillText(job.location + ' · ' + job.difficulty, lx, ly + 6);
     }
 
     // Title

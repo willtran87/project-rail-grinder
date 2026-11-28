@@ -18,6 +18,16 @@ export class RailGrinder {
   private beaconPhase = 0;
   /** One group per grinding car holding its 8 stone modules (they drop together) */
   private grindModules: THREE.Object3D[] = [];
+  /**
+   * The stones themselves, one group per rail per grinding car, pivoting on
+   * the rail head: they tilt to the angle you set and lift when you take the
+   * pressure off (each is one merged mesh).
+   */
+  private stoneSets: { group: THREE.Object3D; side: -1 | 1; restY: number }[] = [];
+  private stoneAngle = { left: 0, right: 0 };
+  private stoneLift = { left: 0, right: 0 };
+  /** Seconds left of the little hop the stones make crossing into a new section */
+  private hop = 0;
   /** Shared by every car: plain colours are stored per vertex (see bakeStatic) */
   private vertexMat = createVertexPbrMaterial();
   private grindModuleRestY: number[] = [];
@@ -63,6 +73,18 @@ export class RailGrinder {
   }
 
   setGrinding(a: boolean) { this._grinding = a; }
+
+  /**
+   * Where the stones are aimed (game angle, degrees: ±40) and whether each
+   * rail's stones are lifted (pressure at zero).
+   */
+  setStones(angleL: number, angleR: number, liftedL: boolean, liftedR: boolean): void {
+    this.stoneAngle.left = angleL; this.stoneAngle.right = angleR;
+    this.stoneLift.left = liftedL ? 1 : 0; this.stoneLift.right = liftedR ? 1 : 0;
+  }
+
+  /** A quick lift-and-drop (crossing into the next section while grinding) */
+  hopStones(): void { this.hop = 0.35; }
 
   private bodyTex: THREE.Texture | null = null;
 
@@ -151,9 +173,21 @@ export class RailGrinder {
     beaconMat.emissiveIntensity = 0.4 + flash * (2.5 + darkness * 4);
     // Headlight lenses glow harder at night (bloom turns them into halos)
     (this.m.hl as THREE.MeshStandardMaterial).emissiveIntensity = 2 + darkness * 4;
-    const drop = this._grinding ? 0.25 : 0;
+    this.hop = Math.max(0, this.hop - dt);
+    const hopUp = this.hop > 0 ? Math.sin((this.hop / 0.35) * Math.PI) * 0.12 : 0;
+    const drop = this._grinding ? 0.25 - hopUp : 0;
     for (let i = 0; i < this.grindModules.length; i++)
       this.grindModules[i].position.y += (this.grindModuleRestY[i] - drop - this.grindModules[i].position.y) * 6 * dt;
+    // Stones: tilt to the set angle (a little less than the game's ±40°, so
+    // they stay over the rail) and lift clear when their pressure is off
+    const k = Math.min(1, dt * 8);
+    for (const s of this.stoneSets) {
+      const rail = s.side < 0 ? 'left' : 'right';
+      const tilt = THREE.MathUtils.degToRad(this.stoneAngle[rail] * 0.6) * (s.side < 0 ? 1 : -1);
+      s.group.rotation.z += (tilt - s.group.rotation.z) * k;
+      const y = s.restY - drop + this.stoneLift[rail] * 0.12;
+      s.group.position.y += (y - s.group.position.y) * k;
+    }
   }
 
   // ---- Primitives ----
@@ -286,7 +320,7 @@ export class RailGrinder {
    */
   private reg(g: THREE.Group, off: number, hl: number) {
     bakeStatic(g, {
-      keep: new Set<THREE.Object3D>(this.grindModules),
+      keep: new Set<THREE.Object3D>([...this.grindModules, ...this.stoneSets.map((s) => s.group)]),
       // ~15 plain paint/metal materials → one draw call per car
       vertexMaterial: this.vertexMat,
       // headlights and beacons change brightness every frame: keep their materials
@@ -424,15 +458,27 @@ export class RailGrinder {
       const z = -4.5 + i * 1.3;
       const mod = this.B(modules, 2.0, 0.3, 0.9, this.m.fmid, 0, 1.2, z);
       mod.castShadow = false; // inside the body: its shadow could never be seen
-      // Up close (camera 5): a stone and its motor shaft over each rail
-      for (const s of [-1, 1]) {
-        this.C(modules, 0.2, 0.2, 0.09, 12, this.m.fmid, s * 0.74, 1.0, z);
-        this.C(modules, 0.05, 0.05, 0.25, 6, this.m.pipe, s * 0.74, 1.15, z);
-      }
+      // (the stones and motor shafts over each rail are in stoneSets, below)
       this.C(g, 0.12, 0.12, 0.7, 12, this.m.pipe, 0, 0.95, z, 0, Math.PI / 2);
     }
     bakeStatic(modules, { vertexMaterial: this.vertexMat });
     this.grindModules.push(modules); this.grindModuleRestY.push(0);
+    // Up close (camera 5): a stone and its motor shaft over each rail, all 8
+    // of a side in one group that pivots on the rail head
+    for (const s of [-1, 1] as const) {
+      const set = new THREE.Group();
+      set.position.set(s * 0.74, 1.0, 0);
+      g.add(set);
+      for (let i = 0; i < 8; i++) {
+        const z = -4.5 + i * 1.3;
+        this.C(set, 0.2, 0.2, 0.09, 12, this.m.fmid, 0, 0, z);
+        this.C(set, 0.05, 0.05, 0.25, 6, this.m.pipe, 0, 0.15, z);
+        // a bright grinding face on the stone's underside
+        this.C(set, 0.17, 0.17, 0.01, 12, this.m.pipe, 0, -0.05, z);
+      }
+      bakeStatic(set, { vertexMaterial: this.vertexMat });
+      this.stoneSets.push({ group: set, side: s, restY: 1.0 });
+    }
 
     // === SPARK CONTAINMENT SYSTEM ===
     // Steel curtain frames (L-shaped brackets holding the tarpaulins)

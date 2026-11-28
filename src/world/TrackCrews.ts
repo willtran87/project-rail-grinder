@@ -19,7 +19,7 @@ import { bakeStatic, createVertexPbrMaterial } from '../core/bakeStatic';
 /** Work-zone speed limit (m/s) — about 8 mph */
 export const WORK_ZONE_SPEED = 3.6;
 /** Half-length of a work zone along the track (m) */
-export const WORK_ZONE_HALF = 22;
+export const WORK_ZONE_HALF = 12;
 
 interface Worker { root: THREE.Group; arm: THREE.Object3D; home: number; phase: number }
 export interface Crew { dist: number; workers: Worker[]; violated: boolean; group: THREE.Group }
@@ -106,6 +106,19 @@ export class TrackCrews {
       group.add(w.root);
       workers.push(w);
     }
+    // Their hi-rail truck, parked off the track behind them (amber light bar)
+    const truck = new THREE.Group();
+    const white = new THREE.MeshStandardMaterial({ color: 0xe8e8e4, roughness: 0.6 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x222428, roughness: 0.7 });
+    this.box(truck, 2.0, 1.0, 5.2, white, 0, 0.9, 0);          // body
+    this.box(truck, 2.0, 0.9, 1.9, white, 0, 1.85, 1.3);        // cab
+    this.box(truck, 1.9, 0.5, 0.05, dark, 0, 1.95, 2.26);       // windscreen
+    this.box(truck, 1.2, 0.12, 0.25, this.mats.sign, 0, 2.36, 1.3); // light bar
+    for (const x of [-0.95, 0.95]) for (const z of [-1.6, 1.7]) this.box(truck, 0.25, 0.7, 0.7, dark, x, 0.35, z);
+    this.box(truck, 1.8, 0.25, 0.3, this.mats.stripe, 0, 0.55, -2.6); // hi-rail wheel frame
+    bakeStatic(truck, { vertexMaterial: this.vmat, animated: new Set([this.mats.sign]) });
+    this.place(truck, dist + 9, -8.5);
+    group.add(truck);
     // "MEN WORKING" board 50 m before the crew
     const sign = new THREE.Group();
     this.box(sign, 0.06, 1.6, 0.06, this.mats.pole, 0, 0.8, 0);

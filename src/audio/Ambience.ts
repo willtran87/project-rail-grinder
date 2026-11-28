@@ -31,6 +31,9 @@ const BEDS: Record<Region, BedSettings> = {
   mountain: { type: 'lowpass',  freq: 520, q: 0.7, gain: 0.06,  swellPeriod: 6,  swellDepth: 0.8 },
   city:     { type: 'lowpass',  freq: 190, q: 0.5, gain: 0.07,  swellPeriod: 17, swellDepth: 0.3 },
   coast:    { type: 'lowpass',  freq: 750, q: 0.5, gain: 0.08,  swellPeriod: 8,  swellDepth: 0.9 },
+  desert:   { type: 'bandpass', freq: 950, q: 0.3, gain: 0.035, swellPeriod: 14, swellDepth: 0.7 },
+  forest:   { type: 'lowpass',  freq: 380, q: 0.5, gain: 0.05,  swellPeriod: 9,  swellDepth: 0.6 },
+  appalachia: { type: 'bandpass', freq: 600, q: 0.4, gain: 0.025, swellPeriod: 12, swellDepth: 0.5 },
 };
 
 export class Ambience {
@@ -127,7 +130,7 @@ export class Ambience {
     }
 
     // Crickets: steady chirping on warm nights out on the prairie
-    if (this.region === 'prairie' && darkness > 0.45 && calm > 0.5) {
+    if ((this.region === 'prairie' || this.region === 'appalachia' || this.region === 'desert') && darkness > 0.45 && calm > 0.5) {
       this.cricketTimer -= dt;
       if (this.cricketTimer <= 0) {
         this.cricketTimer = 0.42 + Math.random() * 0.25;
@@ -165,6 +168,15 @@ export class Ambience {
         break;
       case 'coast':
         if (!night) this.gulls(vol);
+        break;
+      case 'desert':
+        if (!night) this.hawk(vol * 0.8); else this.owl(vol * 0.6);
+        break;
+      case 'forest':
+        if (night) this.owl(vol); else this.birdSong(vol * 0.8);
+        break;
+      case 'appalachia':
+        if (!night) this.birdSong(vol); else this.owl(vol * 0.7);
         break;
     }
   }

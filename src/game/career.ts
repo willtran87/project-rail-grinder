@@ -9,6 +9,7 @@
  */
 
 import { loadJSON, saveJSON } from '../core/storage';
+import { badgeCount } from './loop';
 
 // ---------------------------------------------------------------------------
 // Upgrades
@@ -80,9 +81,12 @@ export function isUnlocked(starsRequired: number, totalStars: number): boolean {
   return totalStars >= starsRequired;
 }
 
-/** Sum of best stars across jobs (from progress.ts records) */
+/**
+ * Career stars: the sum of best stars across jobs (from progress.ts records),
+ * plus one for each mastery badge (night shift / no fast travel / speed run).
+ */
 export function totalBestStars(records: Record<string, { bestStars: number }>): number {
-  return Object.values(records).reduce((sum, r) => sum + r.bestStars, 0);
+  return Object.values(records).reduce((sum, r) => sum + r.bestStars, 0) + badgeCount();
 }
 
 // ---------------------------------------------------------------------------

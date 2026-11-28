@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   COMPLETION_ACCURACY, heatRatePerSec, heatPenalty, removalRatePerSec,
-  stoneContactWidth, stoneGrindX, sectionStars, jobStars, sectionProgress,
+  stoneContactWidth, stoneGrindX, sectionStars, jobStars, sectionProgress, STONE_LIFT_PRESSURE,
 } from './rules';
 
 describe('grinding physics', () => {
@@ -22,6 +22,12 @@ describe('grinding physics', () => {
     expect(heatPenalty(70)).toBeGreaterThan(1);   // hot-cut zone: faster
     expect(heatPenalty(90)).toBeLessThan(1);      // overheated: glazed
     expect(heatPenalty(90)).toBeLessThan(heatPenalty(70));
+  });
+
+  it('a stone at (almost) zero pressure is lifted and cuts nothing', () => {
+    expect(removalRatePerSec(0)).toBe(0);
+    expect(removalRatePerSec(STONE_LIFT_PRESSURE - 1)).toBe(0);
+    expect(removalRatePerSec(STONE_LIFT_PRESSURE)).toBeGreaterThan(0);
   });
 
   it('more pressure removes more metal through a narrower contact', () => {

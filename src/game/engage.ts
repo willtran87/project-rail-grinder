@@ -102,7 +102,7 @@ export const CREW: Record<CrewId, { name: string; role: string; perk: string; co
 
 export type MachineId = 'g17' | 'g22';
 export const MACHINES: Record<MachineId, { name: string; desc: string; cost: number; driveSpeed: number; heat: number }> = {
-  g17: { name: 'Grinder 17', desc: 'The trusty standard consist', cost: 0, driveSpeed: 1, heat: 1 },
+  g17: { name: 'Grinder 42', desc: 'The trusty standard consist', cost: 0, driveSpeed: 1, heat: 1 },
   g22: { name: 'Grinder 22 "Rapid"', desc: '30% faster between sections, stones run 10% hotter', cost: 60000, driveSpeed: 1.3, heat: 1.1 },
 };
 

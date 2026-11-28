@@ -8,3 +8,4 @@ dist/
 
 # Screenshot check output (scripts/visual-check.mjs)
 visual/current/
+playtest/

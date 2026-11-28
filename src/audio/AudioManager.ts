@@ -11,12 +11,22 @@
  */
 
 import { Ambience } from './Ambience';
+import { Music } from './Music';
 import { glide, forgetGlide } from './glide';
 import type { Region } from '../types/rail';
 
 export class AudioManager {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  /** Sound captions: called with a short description when an important sound plays */
+  onCue: ((text: string) => void) | null = null;
+  /** The adaptive score (see Music.ts); null until the audio starts */
+  music: Music | null = null;
+  private musicVolume = 0.6;
+  /** 0..1 how high the combo is: the grinding sound sings a little higher */
+  comboLift = 0;
+  /** Tunnel echo: a short feedback delay on the effects bus (built on first use) */
+  private echoWet: GainNode | null = null;
 
   // Sound channels
   private grindNode: OscillatorNode | null = null;
@@ -39,6 +49,33 @@ export class AudioManager {
   private region: Region = 'prairie';
 
   /** Which route's background sounds to play (safe to call before init) */
+  /**
+   * Inside a tunnel, everything echoes off the walls.
+   * @param amount - 0 (open air) .. 1 (deep in the bore)
+   */
+  setEcho(amount: number): void {
+    if (!this.ctx || !this.masterGain || !this.outGain) return;
+    if (!this.echoWet) {
+      if (amount < 0.01) return;
+      const delay = this.ctx.createDelay(1);
+      delay.delayTime.value = 0.16;
+      const feedback = this.ctx.createGain();
+      feedback.gain.value = 0.38;
+      const tone = this.ctx.createBiquadFilter();
+      tone.type = 'lowpass';
+      tone.frequency.value = 2400;
+      this.echoWet = this.ctx.createGain();
+      this.echoWet.gain.value = 0;
+      this.masterGain.connect(delay);
+      delay.connect(tone);
+      tone.connect(feedback);
+      feedback.connect(delay);
+      tone.connect(this.echoWet);
+      this.echoWet.connect(this.outGain);
+    }
+    this.echoWet.gain.setTargetAtTime(amount * 0.55, this.ctx.currentTime, 0.15);
+  }
+
   setRegion(region: Region): void {
     this.region = region;
     this.ambience?.setRegion(region);
@@ -86,6 +123,8 @@ export class AudioManager {
       this.ambience = new Ambience(this.ctx, this.outGain, this.noise);
       this.applyVolumes();
       this.ambience.setRegion(this.region);
+      this.music = new Music(this.ctx, this.outGain, this.noise);
+      this.music.setVolume(this.musicVolume);
       this.initialized = true;
     } catch {
       // Web Audio not supported
@@ -99,7 +138,9 @@ export class AudioManager {
   }
 
   /** Volumes 0..1 from the settings menu */
-  setVolumes(master: number, effects: number, ambience: number): void {
+  setVolumes(master: number, effects: number, ambience: number, music = this.musicVolume): void {
+    this.musicVolume = music;
+    this.music?.setVolume(music);
     this.volumes = { master, effects, ambience };
     this.applyVolumes();
   }
@@ -146,7 +187,7 @@ export class AudioManager {
     // Sweet-spot sing: only when actually taking metal off a defect
     const sing = overgrinding ? 0 : onDefect;
     // ...and the closer the section is to perfect, the higher it sings
-    glide(this.singNode!.frequency, 620 + sing * 260 + this.accuracyLift * 220, now);
+    glide(this.singNode!.frequency, 620 + sing * 260 + this.accuracyLift * 220 + this.comboLift * 160, now);
     glide(this.singGain!.gain, sing * grindIntensity * 0.07, now);
     // Rough rail shudders; a finished profile runs smooth
     const rough = 1 - this.accuracyLift;
@@ -271,6 +312,7 @@ export class AudioManager {
 
   /** Play a completion ding (synthesized bell) */
   playDing(): void {
+    this.onCue?.('[radio chime]');
     if (!this.ctx || !this.masterGain) return;
 
     const now = this.ctx.currentTime;
@@ -324,7 +366,40 @@ export class AudioManager {
    * Deliberately different from the over-grind buzzer so the two warnings
    * can't be confused.
    */
+  /** A crowd cheering (filtered noise swells with a few whoops) */
+  playCheer(): void {
+    this.onCue?.('[crowd cheering]');
+    if (!this.ctx || !this.masterGain || !this.noise) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 1400; f.Q.value = 0.8;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.22, t + 0.4);
+    g.gain.linearRampToValueAtTime(0.16, t + 1.6);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.2);
+    src.connect(f); f.connect(g); g.connect(this.masterGain);
+    src.start(t, 0, 3.3);
+    for (let i = 0; i < 4; i++) {
+      const s = t + 0.3 + i * 0.45 + Math.random() * 0.2;
+      const base = 500 + Math.random() * 300;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(base, s);
+      o.frequency.exponentialRampToValueAtTime(base * 1.8, s + 0.25);
+      const og = this.ctx.createGain();
+      og.gain.setValueAtTime(0, s);
+      og.gain.linearRampToValueAtTime(0.05, s + 0.05);
+      og.gain.exponentialRampToValueAtTime(0.0001, s + 0.35);
+      o.connect(og); og.connect(this.masterGain);
+      o.start(s); o.stop(s + 0.4);
+    }
+  }
+
   playTrainHorn(): void {
+    this.onCue?.('[horn]');
     if (!this.ctx || !this.masterGain) return;
     const now = this.ctx.currentTime;
 
@@ -384,6 +459,7 @@ export class AudioManager {
 
   /** Harsh metal screech: a stone cut below the target line */
   playScreech(): void {
+    this.onCue?.('[stones screech]');
     if (!this.ctx || !this.masterGain || !this.noise) return;
     const t = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
@@ -408,6 +484,7 @@ export class AudioManager {
    * @param loud - 0..1, nearer strikes are louder and sharper
    */
   playThunder(delay: number, loud: number): void {
+    this.onCue?.('[thunder]');
     if (!this.ctx || !this.masterGain || !this.noise) return;
     const t = this.ctx.currentTime + delay;
     const src = this.ctx.createBufferSource();
@@ -428,6 +505,7 @@ export class AudioManager {
 
   /** Two falling tones: the combo was lost */
   playComboBreak(): void {
+    this.onCue?.('[combo lost]');
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.note(587, t, 0.16, 0.08, 'triangle');
@@ -459,6 +537,7 @@ export class AudioManager {
 
   /** Play harsh buzzer for over-grinding */
   playOvergrindAlarm(): void {
+    this.onCue?.('[alarm]');
     if (!this.ctx || !this.masterGain) return;
     const now = this.ctx.currentTime;
 

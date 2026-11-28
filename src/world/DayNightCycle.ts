@@ -20,6 +20,7 @@ import * as THREE from 'three';
 import type { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { SkyDome } from './SkyDome';
 import type { GradeUniforms } from '../core/Engine';
+import type { Region } from '../types/rail';
 
 interface TimePreset {
   name: string;
@@ -135,6 +136,18 @@ export interface PostFX {
   bloom: UnrealBloomPass;
   grade: GradeUniforms;
 }
+
+/** Per-region colour grade, multiplied onto the time-of-day grade (see applyRegionLook) */
+const REGION_LOOK: Record<Region,
+  { gain: [number, number, number]; lift: [number, number, number]; saturation: number; contrast: number; night?: [number, number, number] }> = {
+  prairie: { gain: [1.05, 1.0, 0.9], lift: [0.008, 0.004, 0], saturation: 1.08, contrast: 1.0 },
+  mountain: { gain: [0.94, 0.99, 1.07], lift: [0, 0.004, 0.016], saturation: 0.94, contrast: 1.04 },
+  city: { gain: [1.0, 0.98, 0.96], lift: [0.004, 0.002, 0], saturation: 0.97, contrast: 1.06, night: [1.14, 0.96, 0.72] },
+  coast: { gain: [0.97, 1.02, 1.04], lift: [0, 0.006, 0.01], saturation: 1.05, contrast: 1.0 },
+  desert: { gain: [1.09, 0.99, 0.84], lift: [0.012, 0.006, 0], saturation: 1.1, contrast: 1.04 },
+  forest: { gain: [0.94, 1.03, 0.98], lift: [0, 0.006, 0.004], saturation: 1.0, contrast: 1.02 },
+  appalachia: { gain: [1.0, 1.0, 0.96], lift: [0.01, 0.01, 0.012], saturation: 0.92, contrast: 0.96 },
+};
 
 export class DayNightCycle {
   private scene: THREE.Scene;
@@ -329,6 +342,7 @@ export class DayNightCycle {
     this._darkness = Math.max(0, Math.min(1, 1 - lum / 0.08));
 
     this.applyWeather();
+    this.applyRegionLook();
     if (this.fogScale !== 1) {
       const fog = this.scene.fog as THREE.Fog;
       fog.near *= this.fogScale;
@@ -339,6 +353,26 @@ export class DayNightCycle {
     const boost = this.boost * this._darkness;
     this.renderer.toneMappingExposure += (1.6 - this.renderer.toneMappingExposure) * boost;
   }
+
+  /**
+   * Each kind of route has its own colour: a warm, golden prairie, cold blue
+   * mountains, a city that goes sodium-orange at night, a teal coast. Layered
+   * on the time-of-day grade.
+   */
+  region: Region | null = null;
+  private applyRegionLook(): void {
+    if (!this.post || !this.region) return;
+    const g = this.post.grade;
+    const d = this._darkness;
+    const look = REGION_LOOK[this.region];
+    g.uGain.value.multiply(this._tmpColor.setRGB(look.gain[0], look.gain[1], look.gain[2]));
+    g.uLift.value.add(this._tmpColor.setRGB(look.lift[0], look.lift[1], look.lift[2]));
+    g.uSaturation.value *= look.saturation;
+    g.uContrast.value *= look.contrast;
+    if (look.night) g.uGain.value.lerp(this._tmpColor.copy(g.uGain.value).multiply(
+      this._tmpColor2.setRGB(look.night[0], look.night[1], look.night[2])), d);
+  }
+  private _tmpColor2 = new THREE.Color();
 
   /** Clouds grey out the sky and dim the sun; snow whitens the ground */
   private applyWeather(): void {

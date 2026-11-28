@@ -43,7 +43,8 @@ export const TRACK_CLASSES: Record<TrackClass, { name: string; tip: string; reli
 
 /** Which profile a route uses */
 export function trackClassFor(region: Region, seed = 0): TrackClass {
-  if (region === 'mountain') return 'heavy';
+  if (region === 'mountain' || region === 'appalachia') return 'heavy';
+  if (region === 'forest') return seed % 2 === 0 ? 'heavy' : 'standard';
   if (region === 'city') return 'transit';
   if (region === 'coast') return seed % 2 === 0 ? 'highspeed' : 'standard';
   return 'standard';
@@ -124,6 +125,11 @@ export function weatherModifiers(wet: number, snow: boolean): { removal: number;
 export const REGROWTH_INTERVAL = 50;
 /** Size of each tick, as a fraction of a light defect */
 export const REGROWTH_AMOUNT = 0.18;
+/**
+ * At most this many rounds of extra wear per section: the play-test found
+ * uncapped regrowth doubling a slow player's untouched damage (a spiral).
+ */
+export const REGROWTH_MAX = 3;
 
 // ---------------------------------------------------------------------------
 // Emergency calls

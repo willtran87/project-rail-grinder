@@ -13,6 +13,8 @@
  *       row 0: base colour (rgb) + metalness (a)
  *       row 1: glow colour × strength (rgb) + roughness (a)
  *       row 2: running band glow × strength (rgb) + band opacity (a)
+ *       row 3: damage kind, damage strength, running band centre and
+ *              half-width (across the band strip, 0..1)
  *   - the shader looks its segment up in that texture
  * Changing a segment's look = writing 12 numbers. Grinding a segment rewrites
  * only that segment's vertices, in place (no new geometry, no GPU re-allocation).
@@ -37,7 +39,7 @@ const PROFILE_STEP = 2;
 const SHINE_WIDTH = 0.045;
 const SHINE_LIFT = 0.0015;
 
-const DATA_ROWS = 3;
+const DATA_ROWS = 4;
 
 /** Shared GLSL: fetch this vertex's segment column from the data texture */
 const VERTEX_HEAD = /* glsl */ `
@@ -68,6 +70,8 @@ export class RailBatch {
   private readonly dataTex: THREE.DataTexture;
   private readonly positions: THREE.BufferAttribute;
   private readonly normals: THREE.BufferAttribute;
+  /** Each vertex's position across / up / along its own rail (for the damage marks) */
+  private readonly locals: THREE.BufferAttribute;
 
   // Scratch space for writing one segment
   private readonly ox: Float32Array;
@@ -108,11 +112,14 @@ export class RailBatch {
     this.normals = new THREE.BufferAttribute(new Float32Array(vCount * 3), 3);
     this.positions.setUsage(THREE.DynamicDrawUsage);
     this.normals.setUsage(THREE.DynamicDrawUsage);
+    this.locals = new THREE.BufferAttribute(new Float32Array(vCount * 3), 3);
+    this.locals.setUsage(THREE.DynamicDrawUsage);
     const seg = new Float32Array(vCount);
     for (let s = 0; s < this.slots; s++) seg.fill(s, s * this.vertsPerSlot, (s + 1) * this.vertsPerSlot);
     const railGeo = new THREE.BufferGeometry();
     railGeo.setAttribute('position', this.positions);
     railGeo.setAttribute('normal', this.normals);
+    railGeo.setAttribute('aLoc', this.locals);
     railGeo.setAttribute('aSeg', new THREE.BufferAttribute(seg, 1));
     railGeo.setIndex(this.buildIndex(pointCount));
 
@@ -157,6 +164,22 @@ export class RailBatch {
   }
 
   /**
+   * Damage marks and the running band's shape for a segment.
+   * @param kind - 0 none, 1 wear, 2 corrugation, 3 head checks, 4 gauge face, 5 flat crown
+   * @param strength - 0..1 how strongly the marks show
+   * @param bandCenter / bandHalf - the polished band across its strip (0..1)
+   */
+  setSurface(slot: number, kind: number, strength: number, bandCenter: number, bandHalf: number): void {
+    const i = slot * 4 + this.slots * 4 * 3;
+    const d = this.data;
+    d[i] = kind; d[i + 1] = strength; d[i + 2] = bandCenter; d[i + 3] = bandHalf;
+    this.dataTex.needsUpdate = true;
+  }
+
+  /** The running band strip's width (m) in profile units (mm), for working out band positions */
+  static readonly BAND_STRIP_MM = SHINE_WIDTH / PROFILE_SCALE;
+
+  /**
    * (Re)build one segment's rail from its profile, writing straight into the
    * shared vertex buffer. Only that segment's slice is re-uploaded to the GPU.
    */
@@ -167,6 +190,7 @@ export class RailBatch {
     const nm = this.normalMatrices[slot];
     const pos = this.positions.array as Float32Array;
     const nor = this.normals.array as Float32Array;
+    const loc = this.locals.array as Float32Array;
     const base = slot * this.vertsPerSlot;
     const ox = this.ox, oy = this.oy;
 
@@ -179,6 +203,7 @@ export class RailBatch {
       this._v.set(x, y, z).applyMatrix4(m);
       this._n.set(nx, ny, nz).applyMatrix3(nm).normalize();
       const k = (base + v) * 3;
+      loc[k] = x; loc[k + 1] = y; loc[k + 2] = z;
       pos[k] = this._v.x; pos[k + 1] = this._v.y; pos[k + 2] = this._v.z;
       nor[k] = this._n.x; nor[k + 1] = this._n.y; nor[k + 2] = this._n.z;
     };
@@ -205,8 +230,10 @@ export class RailBatch {
     const start = base * 3, count = this.vertsPerSlot * 3;
     this.positions.addUpdateRange(start, count);
     this.normals.addUpdateRange(start, count);
+    this.locals.addUpdateRange(start, count);
     this.positions.needsUpdate = true;
     this.normals.needsUpdate = true;
+    this.locals.needsUpdate = true;
   }
 
   /** Call once after the first writeGeometry of every slot */
@@ -216,6 +243,7 @@ export class RailBatch {
     // The first upload sends the whole buffer anyway
     this.positions.clearUpdateRanges();
     this.normals.clearUpdateRanges();
+    this.locals.clearUpdateRanges();
   }
 
   dispose(): void {
@@ -367,17 +395,56 @@ export class RailBatch {
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uSegData = { value: tex };
       shader.vertexShader = VERTEX_HEAD + `
+        attribute vec3 aLoc;
         varying vec4 vSegA;
         varying vec4 vSegB;
+        varying vec4 vSegC;
+        varying vec3 vLoc;
+        varying float vUp;
       ` + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
         vSegA = texelFetch(uSegData, ivec2(int(aSeg + 0.5), 0), 0);
         vSegB = texelFetch(uSegData, ivec2(int(aSeg + 0.5), 1), 0);
+        vSegC = texelFetch(uSegData, ivec2(int(aSeg + 0.5), 3), 0);
+        vLoc = aLoc;
+        vUp = normal.y; // the rails are already in world space
       `);
       shader.fragmentShader = `
         varying vec4 vSegA;
         varying vec4 vSegB;
+        varying vec4 vSegC;
+        varying vec3 vLoc;
+        varying float vUp;
+        // Damage you can read on the rail head itself (darker marks, by kind)
+        float railMarks(float kind, vec3 p) {
+          float x = abs(p.x), z = p.z;
+          if (kind < 1.5) {          // general wear: flaking spots
+            float n = fract(sin(dot(floor(vec2(p.x * 420.0, z * 55.0)), vec2(12.9898, 78.233))) * 43758.5453);
+            return step(0.8, n) * (1.0 - smoothstep(0.05, 0.07, x));
+          } else if (kind < 2.5) {   // corrugation: ripples every ~20 cm
+            return smoothstep(0.35, 0.95, sin(z * 31.4) * 0.5 + 0.5) * (1.0 - smoothstep(0.045, 0.06, x));
+          } else if (kind < 3.5) {   // head checks: fine slanting cracks at the gauge corner
+            return smoothstep(0.03, 0.05, x) * step(0.84, fract(z * 11.0 + x * 38.0));
+          } else if (kind < 4.5) {   // gauge-face wear: a ragged lip at the edge
+            float n = fract(sin(floor(z * 40.0) * 91.7) * 4375.5);
+            return smoothstep(0.052, 0.066, x) * (0.6 + 0.4 * n);
+          }
+          return (1.0 - smoothstep(0.015, 0.04, x)) * 0.7; // flattened crown: a dull wide strip
+        }
       ` + shader.fragmentShader
-        .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( vSegA.rgb, opacity );')
+        .replace('vec4 diffuseColor = vec4( diffuse, opacity );', `vec4 diffuseColor = vec4( vSegA.rgb, opacity );
+          if ( vSegC.y > 0.01 && vUp > 0.55 ) {
+            float top = vSegC.y * smoothstep( 0.55, 0.85, vUp );
+            float m = railMarks( vSegC.x, vLoc ) * top;
+            // Corrugation crests and the gauge corner where head checks start are
+            // worn bright by the wheels; cracks, flakes and dull patches are dark
+            vec3 worn = vec3( 0.62, 0.55, 0.48 );
+            if ( vSegC.x > 1.5 && vSegC.x < 2.5 ) diffuseColor.rgb = mix( diffuseColor.rgb, worn, m * 0.85 );
+            else if ( vSegC.x < 1.5 ) diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.62, 0.3, 0.1 ), m * 0.9 ); // flaking: fresh orange rust
+            else {
+              if ( vSegC.x > 2.5 && vSegC.x < 3.5 ) diffuseColor.rgb = mix( diffuseColor.rgb, worn, smoothstep( 0.03, 0.05, abs( vLoc.x ) ) * top * 0.6 );
+              diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.05, 0.035, 0.025 ), m * 0.85 );
+            }
+          }`)
         .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = vSegB.rgb;')
         .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vSegA.a;')
         .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vSegB.a;');
@@ -392,14 +459,23 @@ export class RailBatch {
       shader.uniforms.uSegData = { value: tex };
       shader.vertexShader = VERTEX_HEAD + `
         varying vec4 vShine;
+        varying vec2 vBand;
+        varying float vBandU;
       ` + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
         vShine = texelFetch(uSegData, ivec2(int(aSeg + 0.5), 2), 0);
+        vBand = texelFetch(uSegData, ivec2(int(aSeg + 0.5), 3), 0).zw;
+        vBandU = uv.x;
       `);
       shader.fragmentShader = `
         varying vec4 vShine;
+        varying vec2 vBand;
+        varying float vBandU;
       ` + shader.fragmentShader
         .replace('vec4 diffuseColor = vec4( diffuse, opacity );',
-          `vec4 diffuseColor = vec4( diffuse, opacity * vShine.a );
+          `// The band is where the wheels will ride: narrow and centred on a
+           // good profile, wide or off to one side on a poor one
+           float bandEdge = 1.0 - smoothstep( vBand.y * 0.85, vBand.y, abs( vBandU - vBand.x ) );
+           vec4 diffuseColor = vec4( diffuse, opacity * vShine.a * ( vBand.y > 0.0 ? bandEdge : 1.0 ) );
            if ( diffuseColor.a < 0.01 ) discard; // rusty rail: no band`)
         .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = vShine.rgb;');
     };

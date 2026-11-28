@@ -41,10 +41,26 @@ export class CameraController {
    */
   motionScale = 1;
   private punchAmount = 0;
+  /** Lean into curves (radians, smoothed) and pull back with speed (0..1, smoothed) */
+  private lean = 0;
+  private pullBack = 0;
+  /** Seconds left of the close-call replay shot */
+  private replay = 0;
+
+  /**
+   * A short dramatic replay shot: low beside the track ahead, looking back
+   * at the grinding cars. Game slows time while it runs.
+   */
+  startReplay(seconds: number): void { this.replay = seconds; this.replayCut = true; }
+  get replaying(): boolean { return this.replay > 0; }
+  private replayCut = false;
 
   /** Add screen shake. Uses the larger of the current and requested amount. */
+  /** 0 = no camera shake at all (Settings → Screen shake) */
+  shakeScale = 1;
+
   shake(amount: number): void {
-    this.shakeAmount = Math.max(this.shakeAmount, amount * this.motionScale);
+    this.shakeAmount = Math.max(this.shakeAmount, amount * this.motionScale * this.shakeScale);
   }
 
   /**
@@ -57,26 +73,58 @@ export class CameraController {
 
   /** Set a steady shake level (e.g. continuous rumble while grinding) */
   setShake(amount: number): void {
-    this.shakeAmount = amount * this.motionScale;
+    this.shakeAmount = amount * this.motionScale * this.shakeScale;
   }
 
-  /** Gameplay camera — call once per frame */
-  update(dt: number, track: RailTrack, grinderPosition: number): void {
+  /**
+   * Gameplay camera — call once per frame.
+   * @param speed - the consist's speed (m/s): the chase view pulls back when fast
+   */
+  update(dt: number, track: RailTrack, grinderPosition: number, speed = 0): void {
     const len = track.totalLength;
     const clamp = (d: number) => Math.max(0.1, Math.min(len - 0.1, d));
+    // How hard the line curves here (heading change over 20 m) → lean
+    const a = track.getTrackPoint(clamp(grinderPosition - 10)).forward;
+    const ax = a.x, az = a.z;
+    const b = track.getTrackPoint(clamp(grinderPosition + 10)).forward;
+    let turn = Math.atan2(b.x, b.z) - Math.atan2(ax, az);
+    if (turn > Math.PI) turn -= Math.PI * 2;
+    if (turn < -Math.PI) turn += Math.PI * 2;
+    this.lean += (THREE.MathUtils.clamp(-turn * 0.8, -0.06, 0.06) * this.motionScale - this.lean) * Math.min(1, dt * 1.5);
+    this.pullBack += (Math.min(1, Math.abs(speed) / 12) - this.pullBack) * Math.min(1, dt * 1.2);
+
     const tp = track.getTrackPoint(clamp(grinderPosition));
     const pos = this._pos;
     const look = this._look;
+
+    if (this.replay > 0) {
+      this.replay -= dt;
+      const shotPt = track.getTrackPoint(clamp(grinderPosition + 22));
+      pos.copy(shotPt.position).addScaledVector(shotPt.right, -3.2);
+      pos.y += 0.7;
+      const lookPt = track.getTrackPoint(clamp(grinderPosition + 3));
+      look.copy(lookPt.position);
+      look.y += 1.2;
+      if (this.replayCut) { this.replayCut = false; this.smoothPos.copy(pos); this.smoothTarget.copy(look); }
+      this.camera.position.copy(pos);
+      this.camera.lookAt(look);
+      this.smoothPos.copy(pos);
+      this.smoothTarget.copy(look);
+      if (this.replay <= 0) { this.replay = 0; }
+      return;
+    }
 
     switch (this.angle) {
       case 'chase': {
         // Low 3/4 view from beside and behind the grinding cars, aimed at the
         // rail just ahead — so you can see the stones meeting the rail and the
         // sparks, instead of just the car roof.
-        const camPt = track.getTrackPoint(clamp(grinderPosition - 16));
-        const lookPt = track.getTrackPoint(clamp(grinderPosition + 10));
-        pos.copy(camPt.position).addScaledVector(camPt.right, -7);
-        pos.y += 4.2;
+        // (further back and higher when travelling fast)
+        const back = this.pullBack;
+        const camPt = track.getTrackPoint(clamp(grinderPosition - 16 - back * 10));
+        const cx = camPt.position.x, cy = camPt.position.y, cz = camPt.position.z, rx = camPt.right.x, rz = camPt.right.z;
+        const lookPt = track.getTrackPoint(clamp(grinderPosition + 10 + back * 10));
+        pos.set(cx + rx * -(7 + back * 2), cy + 4.2 + back * 3, cz + rz * -(7 + back * 2));
         look.copy(lookPt.position).addScaledVector(lookPt.right, -1.5);
         look.y += 0.2;
         break;
@@ -137,6 +185,8 @@ export class CameraController {
     }
 
     this.camera.lookAt(this.smoothTarget);
+    // Lean into the curve (not in the views that sit low by the rail)
+    if (this.angle === 'chase' || this.angle === 'cab' || this.angle === 'overview') this.camera.rotateZ(this.lean);
   }
 
   // ---- Photo mode: free orbit around a point ----

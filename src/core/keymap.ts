@@ -26,6 +26,8 @@ export const REBINDABLE: Rebindable[] = [
   { action: 'x', label: 'Spray water' },
   { action: 'z', label: 'Change stones' },
   { action: 't', label: 'Hold the revenue train' },
+  { action: 'b', label: 'Damage scan overlay' },
+  { action: 'i', label: 'Next stone grade (fitted at the next change)' },
 ];
 
 /** Ready-made layouts */

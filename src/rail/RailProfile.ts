@@ -23,6 +23,13 @@ const POINT_SPACING = 0.5;
 const HEAD_MIN_X = -37;
 const HEAD_MAX_X = 37;
 
+/**
+ * How far below the target (in multiples of the tolerance) a point may be and
+ * still count as accurate for finishing a section. Over-grinding is still
+ * flagged (red line, broken combo, fewer stars) as soon as it passes 1x.
+ */
+export const OVERGRIND_ALLOWANCE = 3;
+
 export class RailProfile {
   points: ProfilePoint[];
   surfaceFinish: number;
@@ -183,7 +190,9 @@ export class RailProfile {
       const absDev = Math.abs(dev);
       totalDeviation += absDev;
       if (absDev > maxDev) maxDev = absDev;
-      if (absDev <= target.tolerance) withinCount++;
+      // A little too deep still passes (the stars pay for it): metal can't be
+      // put back, so without this one slip could make a section unfinishable
+      if (dev <= target.tolerance && dev >= -target.tolerance * OVERGRIND_ALLOWANCE) withinCount++;
     }
 
     const count = deviations.length || 1;
@@ -210,21 +219,23 @@ export class RailProfile {
       // could vanish while the section still fails its 80% accuracy check.
       if (absDev <= target.tolerance) continue;
 
-      // Check if this is a local maximum
-      const neighbors = [
-        Math.abs(deviation.pointDeviations[i - 2]),
-        Math.abs(deviation.pointDeviations[i - 1]),
-        Math.abs(deviation.pointDeviations[i + 1]),
-        Math.abs(deviation.pointDeviations[i + 2]),
-      ];
-      if (absDev >= Math.max(...neighbors)) {
+      // A local peak of its own sign: a hump is the highest point among its
+      // neighbours, a dip the deepest. (Comparing sizes only used to hide a
+      // hump sitting next to a deeper over-ground dip: no marker, though
+      // the section still needed grinding there.)
+      const d = deviation.pointDeviations;
+      const s = dev > 0 ? 1 : -1;
+      if (s * dev >= Math.max(s * d[i - 2], s * d[i - 1], s * d[i + 1], s * d[i + 2])) {
         zones.push({ centerX: this.points[i].x, severity: dev });
       }
     }
 
     // Sort by absolute severity, then keep only zones that are well apart:
     // two peaks a few mm apart are really one defect (and their labels would overlap)
-    zones.sort((a, b) => Math.abs(b.severity) - Math.abs(a.severity));
+    // Humps (metal still to take off) first, then dips, each worst first: three
+    // deep over-ground dips used to push a small remaining hump off the list,
+    // so nothing pointed at the spot that still needed grinding
+    zones.sort((a, b) => (b.severity > 0 ? 1 : 0) - (a.severity > 0 ? 1 : 0) || Math.abs(b.severity) - Math.abs(a.severity));
     const MIN_SEPARATION = 8; // mm
     const picked: Array<{ centerX: number; severity: number }> = [];
     for (const zone of zones) {

@@ -31,13 +31,16 @@ export interface GeneratedRoute {
   scenery?: 'coast';
 }
 
-const REGIONS: Region[] = ['prairie', 'mountain', 'city', 'coast'];
+const REGIONS: Region[] = ['prairie', 'mountain', 'city', 'coast', 'desert', 'forest', 'appalachia'];
 
 const PLACE_NAMES: Record<Region, { lines: string[]; places: string[] }> = {
   prairie: { lines: ['Plains Sub', 'Flint Hills Line', 'Prairie Main', 'Wheat Belt Sub'], places: ['Kansas', 'Nebraska', 'Oklahoma', 'Dakota'] },
   mountain: { lines: ['Summit Grade', 'Canyon Sub', 'High Pass Line', 'Timberline Sub'], places: ['Montana', 'Colorado', 'Idaho', 'Wyoming'] },
   city: { lines: ['Terminal Belt', 'Yard Lead', 'Interchange Line', 'Harbor Belt'], places: ['Chicago, IL', 'Kansas City, MO', 'St. Louis, MO', 'Memphis, TN'] },
   coast: { lines: ['Shoreline Sub', 'Bluffs Line', 'Pacific Sub', 'Dunes Sub'], places: ['California', 'Oregon', 'Washington', 'California'] },
+  desert: { lines: ['Needles Sub', 'Mesa Line', 'Dry Lake Sub', 'Sunset Route'], places: ['Arizona', 'New Mexico', 'Nevada', 'California'] },
+  forest: { lines: ['Cascade Sub', 'Timber Line', 'Fir Creek Sub', 'Skykomish Line'], places: ['Washington', 'Oregon', 'Idaho', 'Washington'] },
+  appalachia: { lines: ['Coal River Sub', 'Hollow Line', 'Big Sandy Sub', 'Ridge Line'], places: ['West Virginia', 'Kentucky', 'Virginia', 'Pennsylvania'] },
 };
 
 const DESCRIPTIONS: Record<Region, string> = {
@@ -45,6 +48,9 @@ const DESCRIPTIONS: Record<Region, string> = {
   mountain: 'Tight curves and steep grades. The gauge side takes a beating: head checks and gauge-face wear.',
   city: 'Slow, stop-and-go terminal trackage. Corrugation everywhere, with tight clearances.',
   coast: 'Salt air and mixed traffic: a bit of every kind of damage, with views to match.',
+  desert: 'Long, hot straights. Heat and blown sand flatten and wear the crown.',
+  forest: 'Wet rail winding through the firs: gauge-side wear on every curve.',
+  appalachia: 'Loaded coal trains on twisting grades: corrugation and gauge-face wear.',
 };
 
 /**
@@ -52,7 +58,7 @@ const DESCRIPTIONS: Record<Region, string> = {
  * on the region, then run-out. Spacing ~45 m between control points.
  */
 function makePoints(region: Region, lengthM: number, rand: () => number): Array<[number, number]> {
-  const curviness = { prairie: 4, mountain: 22, city: 14, coast: 12 }[region];
+  const curviness = { prairie: 4, mountain: 22, city: 14, coast: 12, desert: 6, forest: 18, appalachia: 20 }[region];
   const pts: Array<[number, number]> = [[0, -10], [0, 40]];
   let x = 0, z = 40, drift = 0;
   while (z < lengthM + 120) {
@@ -65,9 +71,11 @@ function makePoints(region: Region, lengthM: number, rand: () => number): Array<
 }
 
 /** A random contract. `level` (career stars, 0..∞) makes it longer, harder and better paid. */
-export function generateRoute(seed: number, level: number, kind: 'random' | 'daily' = 'random'): GeneratedRoute {
+export function generateRoute(seed: number, level: number, kind: 'random' | 'daily' = 'random', onlyRegions?: Region[]): GeneratedRoute {
   const rand = seededRandom(seed);
-  const region = REGIONS[Math.floor(rand() * REGIONS.length)];
+  const pick = Math.floor(rand() * REGIONS.length);
+  // (an event can limit the regions; the same seed still gives the same route)
+  const region = onlyRegions?.length ? onlyRegions[pick % onlyRegions.length] : REGIONS[pick];
   const tier = Math.min(1, level / 30);                  // 0 → 1 over the first ~30 career stars
   const sections = Math.round(10 + tier * 10 + rand() * 4);
   const defectSeverity = Math.round((0.5 + tier * 0.35 + rand() * 0.1) * 100) / 100;

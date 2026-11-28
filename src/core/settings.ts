@@ -16,8 +16,14 @@ export interface Settings {
   effectsVolume: number;
   /** 0..1 birds, wind, rain, crossing bells */
   ambienceVolume: number;
+  /** 0..1 the adaptive music */
+  musicVolume: number;
   /** Less camera shake / punch-in, no hit-stop freeze */
   reducedMotion: boolean;
+  /** Camera shake at all (off = none, whatever the other settings) */
+  screenShake: boolean;
+  /** Text captions for the sounds that matter (alarms, horn, thunder…) */
+  captions: boolean;
   /** No full-screen flashes (over-grind vignette, completion glints) */
   reducedFlashing: boolean;
   /** Size of the HUD text and panels: 1, 1.25 or 1.5 */
@@ -40,7 +46,10 @@ export const DEFAULT_SETTINGS: Settings = {
   masterVolume: 0.8,
   effectsVolume: 1,
   ambienceVolume: 1,
+  musicVolume: 0.6,
   reducedMotion: false,
+  screenShake: true,
+  captions: false,
   reducedFlashing: false,
   uiScale: 1,
   grindMode: 'hold',

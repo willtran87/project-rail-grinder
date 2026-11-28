@@ -75,6 +75,8 @@ export interface CompletionReport extends JobReport {
   nextGoal?: string;
   /** Make and share the result card; resolves with what happened */
   onShare?: () => Promise<string>;
+  /** Extra panel under the pay (goal progress, unlocks): trusted HTML */
+  extraHTML?: string;
 }
 
 /** What the player chose on the results screen */
@@ -419,6 +421,34 @@ export class InspectionReport {
               &nbsp;·&nbsp; BEST COMBO <span style="color:#ffaa00;">${report.bestCombo ?? 0}</span></div>` : ''}
           </div>
 
+          ${report.extraHTML ?? ''}
+          <div style="text-align: center; margin: 18px 0 6px;">
+            <button id="report-replay-btn" style="
+              background: rgba(255,255,255,0.08); color: #ddd; border: 1px solid #555;
+              font-family: 'Press Start 2P', monospace; font-size: 10px;
+              padding: 12px 22px; cursor: pointer; margin-right: 10px;
+            ">REPLAY</button>
+            <button id="report-done-btn" style="
+              background: #ffaa00; color: #000; border: none;
+              font-family: 'Press Start 2P', monospace; font-size: 10px;
+              padding: 12px 32px; cursor: pointer;
+            ">${report.nextJobName ? 'NEXT: ' + report.nextJobName.split(' — ')[0].toUpperCase().slice(0, 26) : 'NEXT CONTRACT'} ▶</button>
+            <div style="margin-top: 8px; font-size: 7px; color: #666;">ENTER = next &nbsp; R = replay</div>
+            ${report.boardRank !== undefined && report.boardRank >= 0 ? `
+              <div style="margin: 14px 0 4px; font-size: 9px; color: #ffd84a;">#${report.boardRank + 1} ON THIS ROUTE'S LEADERBOARD — INITIALS:
+                <input id="report-initials" maxlength="3" value="${(localStorage.getItem('last-initials') || 'AAA').replace(/[^A-Z]/gi, '').slice(0, 3)}"
+                  style="width: 52px; text-transform: uppercase; font-family: 'Press Start 2P', monospace; font-size: 11px; background: #000;
+                  color: #ffd84a; border: 1px solid #ffd84a; padding: 4px; text-align: center; margin-left: 6px;"></div>` : ''}
+            ${report.nextGoal ? `<div style="color: #ffcc77; font-size: 7px; margin-top: 12px;">NEXT GOAL: ${report.nextGoal}</div>` : ''}
+            <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: center;">
+              <button id="report-details-btn" style="background: transparent; color: #aaa; border: 1px solid #555;
+                font-family: 'Press Start 2P', monospace; font-size: 8px; padding: 8px 14px; cursor: pointer;">DETAILS ▾</button>
+              ${report.onShare ? `<button id="report-share-btn" style="background: transparent; color: #8ad0ff;
+                border: 1px solid #8ad0ff; font-family: 'Press Start 2P', monospace; font-size: 8px; padding: 8px 14px; cursor: pointer;">📋 SHARE CARD</button>` : ''}
+            </div>
+          </div>
+
+          <div id="report-details" style="display: none; margin-top: 18px; border-top: 1px solid #222; padding-top: 18px;">
           <div style="display: flex; gap: 14px; margin-bottom: 20px; justify-content: center; flex-wrap: wrap;">
             <div style="text-align: center; background: rgba(255,255,255,0.03); padding: 10px 16px; border: 1px solid #333;">
               <div style="font-size: 6px; color: #888; letter-spacing: 2px;">RQI BEFORE</div>
@@ -485,35 +515,33 @@ export class InspectionReport {
             </div>
           </div>` : ''}
 
-          <div style="text-align: center; margin-top: 24px;">
-            <button id="report-replay-btn" style="
-              background: rgba(255,255,255,0.08); color: #ddd; border: 1px solid #555;
-              font-family: 'Press Start 2P', monospace; font-size: 10px;
-              padding: 12px 22px; cursor: pointer; margin-right: 10px;
-            ">REPLAY</button>
-            <button id="report-done-btn" style="
-              background: #ffaa00; color: #000; border: none;
-              font-family: 'Press Start 2P', monospace; font-size: 10px;
-              padding: 12px 32px; cursor: pointer;
-            ">NEXT CONTRACT</button>
-            ${report.onShare ? `<div style="margin-top: 12px;"><button id="report-share-btn" style="background: transparent; color: #8ad0ff;
-              border: 1px solid #8ad0ff; font-family: 'Press Start 2P', monospace; font-size: 8px; padding: 8px 14px; cursor: pointer;">📋 SHARE RESULT CARD</button></div>` : ''}
-            ${report.nextGoal ? `<div style="color: #ffcc77; font-size: 7px; margin-top: 12px;">NEXT GOAL: ${report.nextGoal}</div>` : ''}
-            ${report.boardRank !== undefined && report.boardRank >= 0 ? `
-              <div style="margin: 0 0 16px; font-size: 9px; color: #ffd84a;">#${report.boardRank + 1} ON THIS ROUTE'S LEADERBOARD — INITIALS:
-                <input id="report-initials" maxlength="3" value="${(localStorage.getItem('last-initials') || 'AAA').replace(/[^A-Z]/gi, '').slice(0, 3)}"
-                  style="width: 52px; text-transform: uppercase; font-family: 'Press Start 2P', monospace; font-size: 11px; background: #000;
-                  color: #ffd84a; border: 1px solid #ffd84a; padding: 4px; text-align: center; margin-left: 6px;"></div>` : ''}
-            ${report.nextJobName ? `<div style="color: #888; font-size: 7px; margin-top: 10px;">UP NEXT: <span style="color:#ffcc55">${report.nextJobName}</span></div>` : ''}
           </div>
         </div>
       `;
 
       this.overlay.style.display = 'flex';
       this.animateResults();
-      if (report.profiles && report.profiles.length) this.bindScrubber(report);
 
+      const details = document.getElementById('report-details')!;
+      const detailsBtn = document.getElementById('report-details-btn')!;
+      detailsBtn.addEventListener('click', () => {
+        const open = details.style.display === 'none';
+        details.style.display = open ? 'block' : 'none';
+        detailsBtn.textContent = open ? 'DETAILS ▴' : 'DETAILS ▾';
+        if (open && report.profiles && report.profiles.length) this.bindScrubber(report);
+      });
+      // Keyboard: ENTER = next, R = replay (not while typing initials)
+      const onKey = (e: KeyboardEvent) => {
+        if ((e.target as HTMLElement)?.id === 'report-initials') { if (e.key === 'Enter') finish('next'); return; }
+        if (e.key === 'Enter') finish('next');
+        else if (e.key === 'r' || e.key === 'R') finish('replay');
+      };
+      window.addEventListener('keydown', onKey);
+      let finished = false;
       const finish = (action: ReportAction) => {
+        if (finished) return;
+        finished = true;
+        window.removeEventListener('keydown', onKey);
         const input = document.getElementById('report-initials') as HTMLInputElement | null;
         if (input && report.onInitials) {
           const initials = (input.value.toUpperCase().replace(/[^A-Z]/g, '') + 'AAA').slice(0, 3);

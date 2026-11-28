@@ -22,7 +22,7 @@ export interface SettingsHooks {
   toggleColorblind(): void;
 }
 
-type Tab = 'settings' | 'controls' | 'guide';
+type Tab = 'settings' | 'controls' | 'guide' | 'glossary';
 
 const BUTTON = `background: rgba(255,255,255,0.08); color: var(--ui-text, #ddd); border: 1px solid var(--ui-border, #444);
   font-family: var(--ui-font, sans-serif); font-size: 12px; padding: 6px 12px; border-radius: 4px; cursor: pointer;`;
@@ -46,6 +46,7 @@ export class SettingsMenu {
           <button data-tab="settings" style="${BUTTON}">SETTINGS</button>
           <button data-tab="controls" style="${BUTTON}">CONTROLS</button>
           <button data-tab="guide" style="${BUTTON}">HOW TO GRIND</button>
+          <button data-tab="glossary" style="${BUTTON}">GLOSSARY</button>
           <div style="flex:1"></div>
           <button data-close style="${BUTTON}">CLOSE (ESC)</button>
         </div>
@@ -84,6 +85,7 @@ export class SettingsMenu {
     });
     if (this.tab === 'settings') this.renderSettings();
     else if (this.tab === 'controls') this.renderControls();
+    else if (this.tab === 'glossary') this.renderGlossary();
     else this.renderGuide();
   }
 
@@ -105,13 +107,16 @@ export class SettingsMenu {
       ${row('Master volume', slider('masterVolume'))}
       ${row('Effects', slider('effectsVolume'), 'Grinding, engine, alarms, fanfares')}
       ${row('Ambience', slider('ambienceVolume'), 'Birds, wind, rain, crossing bells')}
+      ${row('Music', slider('musicVolume'), 'Builds as your combo grows')}
       ${section('GRAPHICS')}
       ${row('Quality', `<button data-quality style="${BUTTON} min-width: 90px;">${this.hooks.getQuality().toUpperCase()}</button>`, 'Lower settings help slower computers (key G)')}
       ${section('ACCESSIBILITY')}
       ${row('Colour-blind palette', `<button data-colorblind style="${BUTTON} min-width: 64px;">${this.hooks.getColorblind() ? 'ON' : 'OFF'}</button>`, 'Key C')}
       ${row('Reduced motion', toggle('reducedMotion'), 'Less camera shake, no freeze-frame on success')}
       ${row('Reduced flashing', toggle('reducedFlashing'), 'No red screen flash on over-grind')}
-      ${row('Text & panel size', choice('uiScale', [[1, '100%'], [1.25, '125%'], [1.5, '150%']]))}
+      ${row('Screen shake', toggle('screenShake'), 'Off: the camera never shakes')}
+      ${row('Sound captions', toggle('captions'), 'Short captions for alarms, horns, thunder and other important sounds')}
+      ${row('Text & panel size', choice('uiScale', [[1, '100%'], [1.25, '125%'], [1.5, '150%'], [1.75, '175%'], [2, '200%']]))}
       ${row('Game speed', choice('gameSpeed', [[1, 'Normal'], [0.85, 'Relaxed (85%)'], [0.7, 'Slow (70%)']]), 'Slows the whole game, deadlines included')}
       ${section('CONTROLS')}
       ${row('Grinding', choice('grindMode', [['hold', 'Hold to grind'], ['toggle', 'Press to toggle']]))}
@@ -241,6 +246,38 @@ export class SettingsMenu {
   }
 
   // ---- HOW TO GRIND ----
+  /** What the words mean (also reachable from the pause menu) */
+  private renderGlossary(): void {
+    const terms: [string, string][] = [
+      ['RQI', 'Rail Quality Index, 0–100: how close the whole route is to the target shape. Your job stars come from it.'],
+      ['Profile', 'The shape of the rail head, seen end-on. The two displays show it for each rail; the dashed line is the target.'],
+      ['Tolerance', 'How far from the target a point may be and still count as good. A section passes when 80% of every stretch is in tolerance.'],
+      ['Over-grind', 'Cutting below the target. Metal can\'t be put back: it costs stars and breaks your combo.'],
+      ['Gauge side / field side', 'The inside edge of the rail (where the wheel flanges run) and the outside edge.'],
+      ['Gauge corner', 'The rounded inside corner of the rail head, where head checks start.'],
+      ['General wear', 'Several humps across the head. Sweep the stone angle from one to the next.'],
+      ['Corrugation', 'Short ripples along the rail. Grind it with light pressure — heavy pressure makes the stones chatter.'],
+      ['Head checks', 'Fine cracks at the gauge corner. Aim at the corner with high pressure.'],
+      ['Gauge-face wear', 'Metal worn off the inside face. Tilt the stone all the way to reach it.'],
+      ['Flattened crown', 'The top of the rail crushed flat and wide. Light pressure, centred on the crown.'],
+      ['Running band', 'The shiny strip where the wheels ride. Narrow and centred means a good profile.'],
+      ['Stone angle / pressure', 'Angle moves where the stone touches; pressure sets how deep and narrow it cuts. Pressure at 0 lifts that stone.'],
+      ['Hot cut', 'Stones between 60% and 80% heat cut 25% faster. Over 80% they glaze and cut badly.'],
+      ['Stone grade', 'Coarse cuts fast but rough, fine is slow but leaves a fine finish. Press I to choose the next set, hold Z (stopped) to fit it.'],
+      ['Mirror finish', 'A section finished on fine stones, very accurately: extra pay.'],
+      ['Perfect pass', 'A section finished in one pass, 90%+ accurate, no over-grind, no overheating.'],
+      ['Combo', 'Three-star sections in a row. It multiplies section bonuses, up to ×3.'],
+      ['Slow order', 'A speed limit (10 mph) on a damaged section, lifted when you fix it.'],
+      ['Revenue train', 'The next scheduled train. Clear sections before it arrives, or ask dispatch to hold it (T).'],
+      ['Switch / frog', 'Where a track branches off. Lift the stones over it or they strike the points and the frog.'],
+      ['Quiet zone', 'Near a town at night: keep the pressure under 60% or there\'s a noise complaint.'],
+      ['Hi-rail truck', 'A road truck that can also run on the rails: the work crews arrive in one.'],
+    ];
+    this.body.innerHTML = `<div style="font-size: 13px; line-height: 1.5; color: #d6d6d6;">
+      ${terms.map(([t, d]) => `<div style="padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+        <b style="color:#ffcc55;">${t}</b> — ${d}</div>`).join('')}</div>`;
+  }
+
   private renderGuide(): void {
     const kinds = Object.values(DEFECT_KINDS).map((k) =>
       `<li style="margin: 4px 0;"><b style="color:#ffcc55;">${k.name}</b> — ${k.tip}</li>`).join('');

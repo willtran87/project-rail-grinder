@@ -23,6 +23,32 @@ function forEachProfile(
   }
 }
 
+/** The highest point above the target anywhere in the section (mm), 0 if none */
+export function sectionDeepestHump(track: RailTrack, target: TargetProfile, sec: number): number {
+  let worst = 0;
+  for (const vi of track.getSegmentsForSection(sec)) {
+    for (const rail of RAILS) {
+      for (const d of track.getProfile(vi, rail).compare(target).pointDeviations) if (d > worst) worst = d;
+    }
+  }
+  return worst;
+}
+
+/**
+ * Is there still metal to take off anywhere in the section (a point above
+ * the target by more than the tolerance)? When there isn't, more grinding
+ * can't help: whatever still fails is over-ground.
+ */
+export function sectionHasExcess(track: RailTrack, target: TargetProfile, sec: number): boolean {
+  for (const vi of track.getSegmentsForSection(sec)) {
+    for (const rail of RAILS) {
+      const dev = track.getProfile(vi, rail).compare(target).pointDeviations;
+      for (const d of dev) if (d > target.tolerance) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * The WORST "within tolerance" fraction in the section. Used for completion:
  * a section is only as good as its worst stretch of rail.

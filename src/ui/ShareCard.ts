@@ -4,7 +4,13 @@
  * browser won't allow clipboard images).
  */
 
-export interface ShareInfo { route: string; grade: string; gradeColor: string; stars: number; pay: string; time: string; rqi: string }
+export interface ShareInfo {
+  route: string; grade: string; gradeColor: string; stars: number; pay: string; time: string; rqi: string;
+  /** "GRINDER 42 · NIGHT OWLS" (custom paint) */
+  crew?: string;
+  /** Route code a friend can type in to play the same route */
+  code?: string;
+}
 
 export async function makeShareCard(info: ShareInfo, frame: Blob | null): Promise<Blob | null> {
   const W = 800, H = 420;
@@ -30,6 +36,8 @@ export async function makeShareCard(info: ShareInfo, frame: Blob | null): Promis
   g.fillStyle = '#ffcc55';
   g.font = 'bold 16px monospace';
   g.fillText('STAYING ON TRACK', 28, 40);
+  if (info.crew) { g.fillStyle = '#ddd'; g.font = 'bold 14px monospace'; g.fillText(info.crew, 28, 62); }
+  if (info.code) { g.fillStyle = '#8ad0ff'; g.font = '14px monospace'; g.textAlign = 'right'; g.fillText(`PLAY THIS ROUTE: ${info.code}`, W - 28, 40); g.textAlign = 'left'; }
   g.fillStyle = '#fff';
   g.font = 'bold 30px sans-serif';
   g.fillText(info.route, 28, H - 120, W - 200);
