@@ -112,6 +112,9 @@ export class DustSystem {
     this.uniforms.uScale.value = scale;
   }
 
+  /** Overall opacity: Game lowers it by day so the dust reads as haze, not white walls */
+  opacity = 1;
+
   update(dt: number): void {
     // No dust in the air: nothing to move, upload or draw
     this.points.visible = this.active > 0;
@@ -130,8 +133,8 @@ export class DustSystem {
       this.positions[i * 3] = p.pos.x;
       this.positions[i * 3 + 1] = p.pos.y;
       this.positions[i * 3 + 2] = p.pos.z;
-      this.sizes[i] = p.size * (1 + t * 3);                     // billows outward
-      this.alphas[i] = 0.35 * Math.min(1, t * 6) * (1 - t);     // fade in fast, out slow
+      this.sizes[i] = p.size * (1 + t * 2.4);                   // billows outward
+      this.alphas[i] = 0.35 * this.opacity * Math.min(1, t * 6) * (1 - t); // fade in fast, out slow
     }
     const geo = this.points.geometry;
     geo.attributes.position.needsUpdate = true;

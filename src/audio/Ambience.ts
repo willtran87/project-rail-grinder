@@ -50,6 +50,11 @@ export class Ambience {
    * @param destination - where to send the sound (the master volume)
    * @param noise - a looping white-noise buffer to filter into wind / surf / rain
    */
+  /** Overall ambience level (settings menu) */
+  setLevel(level: number): void {
+    this.out.gain.value = level;
+  }
+
   constructor(ctx: AudioContext, destination: AudioNode, noise: AudioBuffer) {
     this.ctx = ctx;
     this.out = ctx.createGain();

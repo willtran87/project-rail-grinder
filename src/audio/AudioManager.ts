@@ -68,8 +68,12 @@ export class AudioManager {
     try {
       this.ctx = context ?? new AudioContext();
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.3;
-      this.masterGain.connect(this.ctx.destination);
+      // Effects bus (masterGain, everything but ambience) → master output.
+      // The route ambience has its own level and joins at the output.
+      this.outGain = this.ctx.createGain();
+      this.outGain.connect(this.ctx.destination);
+      this.masterGain.connect(this.outGain);
+      this.applyVolumes();
 
       // One noise buffer shared by wind, grinding grit and the route ambience
       // (filling it is the slow part of starting the audio: once is enough)
@@ -79,7 +83,8 @@ export class AudioManager {
       this.setupClickVoice();
       // The grinding sound is built now, silent, rather than on the first grind
       this.ensureGrindNodes();
-      this.ambience = new Ambience(this.ctx, this.masterGain, this.noise);
+      this.ambience = new Ambience(this.ctx, this.outGain, this.noise);
+      this.applyVolumes();
       this.ambience.setRegion(this.region);
       this.initialized = true;
     } catch {
@@ -90,9 +95,22 @@ export class AudioManager {
   get muted(): boolean { return this._muted; }
   set muted(v: boolean) {
     this._muted = v;
-    if (this.masterGain) {
-      this.masterGain.gain.value = v ? 0 : 0.3;
-    }
+    this.applyVolumes();
+  }
+
+  /** Volumes 0..1 from the settings menu */
+  setVolumes(master: number, effects: number, ambience: number): void {
+    this.volumes = { master, effects, ambience };
+    this.applyVolumes();
+  }
+  private volumes = { master: 0.8, effects: 1, ambience: 1 };
+  private outGain: GainNode | null = null;
+
+  private applyVolumes(): void {
+    if (!this.outGain || !this.masterGain) return;
+    this.outGain.gain.value = this._muted ? 0 : this.volumes.master;
+    this.masterGain.gain.value = 0.375 * this.volumes.effects; // 0.3 at the old default (0.8 master)
+    this.ambience?.setLevel(0.375 * this.volumes.ambience); // 0.3 overall at the defaults, as before
   }
 
   // "Sweet spot" layer: a clean metallic singing tone when the stone is on a defect
@@ -127,8 +145,12 @@ export class AudioManager {
 
     // Sweet-spot sing: only when actually taking metal off a defect
     const sing = overgrinding ? 0 : onDefect;
-    glide(this.singNode!.frequency, 620 + sing * 260, now);
+    // ...and the closer the section is to perfect, the higher it sings
+    glide(this.singNode!.frequency, 620 + sing * 260 + this.accuracyLift * 220, now);
     glide(this.singGain!.gain, sing * grindIntensity * 0.07, now);
+    // Rough rail shudders; a finished profile runs smooth
+    const rough = 1 - this.accuracyLift;
+    if (this.chatterDepth) glide(this.chatterDepth.gain, grindIntensity * 0.06 * rough, now);
   }
 
   /** Build the grinding sound graph the first time it's needed */
@@ -154,6 +176,15 @@ export class AudioManager {
       filter.connect(this.grindGain);
       this.grindGain.connect(this.masterGain);
       this.grindNode.start();
+      // Chatter: a fast wobble on the grind volume, deeper on rough rail
+      const chatter = this.ctx.createOscillator();
+      chatter.type = 'square';
+      chatter.frequency.value = 17;
+      this.chatterDepth = this.ctx.createGain();
+      this.chatterDepth.gain.value = 0;
+      chatter.connect(this.chatterDepth);
+      this.chatterDepth.connect(this.grindGain.gain);
+      chatter.start();
 
       // Noise layer for gritty texture
       this.grindNoiseGain = this.ctx.createGain();
@@ -194,6 +225,31 @@ export class AudioManager {
       this.singNode.start();
       vibrato.start();
     }
+  }
+
+  /** 0..1 how accurate the section being ground is (raises the "sing" pitch) */
+  accuracyLift = 0;
+  /** Chatter: rough rail makes the grind sound shudder; it smooths out as the profile improves */
+  private chatterDepth: GainNode | null = null;
+
+  /** The stones hit the rail: a heavy clunk and a short scrape */
+  playStoneDrop(): void {
+    if (!this.ctx || !this.masterGain || !this.noise) return;
+    const t = this.ctx.currentTime;
+    this.note(70, t, 0.25, 0.22, 'sine');
+    this.note(140, t, 0.12, 0.08, 'square');
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 1800;
+    band.Q.value = 1.5;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.25, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    src.connect(band).connect(gain).connect(this.masterGain);
+    src.start(t, Math.random());
+    src.stop(t + 0.32);
   }
 
   /** True once stopGrinding() has faded the grinding sound out (it's called every frame while not grinding) */
@@ -301,6 +357,106 @@ export class AudioManager {
     }
   }
 
+  // ---- Skill feedback (sweet spot, combo, fanfares) ----
+
+  /** One short synthesized note (a few nodes that stop themselves) */
+  private note(freq: number, start: number, dur: number, vol: number, type: OscillatorType = 'sine'): void {
+    if (!this.ctx || !this.masterGain) return;
+    const osc = this.ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(vol, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+    osc.connect(gain).connect(this.masterGain);
+    osc.start(start);
+    osc.stop(start + dur + 0.02);
+  }
+
+  /** Bright "tink": the stone is aimed right at the worst spot */
+  playSweetSpot(): void {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.note(1568, t, 0.22, 0.07);          // G6
+    this.note(2349, t + 0.04, 0.18, 0.04);   // D7
+  }
+
+  /** Harsh metal screech: a stone cut below the target line */
+  playScreech(): void {
+    if (!this.ctx || !this.masterGain || !this.noise) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.Q.value = 9;
+    band.frequency.setValueAtTime(3200, t);
+    band.frequency.exponentialRampToValueAtTime(1100, t + 0.35);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.35, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    src.connect(band).connect(gain).connect(this.masterGain);
+    src.start(t, Math.random() * 2);
+    src.stop(t + 0.45);
+  }
+
+  /**
+   * Thunder: a low rumble that swells and rolls away.
+   * @param delay - seconds after the flash (sound is slower than light)
+   * @param loud - 0..1, nearer strikes are louder and sharper
+   */
+  playThunder(delay: number, loud: number): void {
+    if (!this.ctx || !this.masterGain || !this.noise) return;
+    const t = this.ctx.currentTime + delay;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const low = this.ctx.createBiquadFilter();
+    low.type = 'lowpass';
+    low.frequency.setValueAtTime(300 + loud * 500, t);
+    low.frequency.exponentialRampToValueAtTime(90, t + 3);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.25 + loud * 0.45, t + 0.08 + (1 - loud) * 0.4);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 3.5);
+    src.connect(low).connect(gain).connect(this.masterGain);
+    src.start(t, Math.random() * 2);
+    src.stop(t + 3.6);
+  }
+
+  /** Two falling tones: the combo was lost */
+  playComboBreak(): void {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.note(587, t, 0.16, 0.08, 'triangle');
+    this.note(392, t + 0.12, 0.3, 0.08, 'triangle');
+  }
+
+  /**
+   * Section finished, scaled to how well:
+   *   1 star  - a ding
+   *   2 stars - the major arpeggio
+   *   3 stars - arpeggio + a sparkling octave on top (pitch rises with the combo)
+   *   perfect - all that + a bright held chord
+   */
+  playSectionFanfare(stars: number, perfect: boolean, combo: number): void {
+    if (!this.ctx) return;
+    if (stars <= 1 && !perfect) { this.playDing(); return; }
+    this.playSegmentComplete();
+    const t = this.ctx.currentTime + 0.24;
+    if (stars >= 3 || perfect) {
+      const lift = Math.pow(2, Math.min(6, Math.max(0, combo - 1)) / 12); // up a semitone per combo step
+      this.note(1047 * lift, t, 0.3, 0.07);
+      this.note(1319 * lift, t + 0.06, 0.3, 0.06);
+      this.note(1568 * lift, t + 0.12, 0.45, 0.06);
+    }
+    if (perfect) {
+      for (const f of [523, 659, 784, 1047]) this.note(f, t + 0.25, 0.9, 0.05, 'triangle');
+    }
+  }
+
   /** Play harsh buzzer for over-grinding */
   playOvergrindAlarm(): void {
     if (!this.ctx || !this.masterGain) return;
@@ -374,12 +530,16 @@ export class AudioManager {
   }
 
   /** Update diesel rumble based on speed */
-  setDieselSpeed(speed: number): void {
+  /**
+   * @param speed - m/s
+   * @param load - 0..1 how hard the engine works (stone pressure while grinding)
+   */
+  setDieselSpeed(speed: number, load = 0): void {
     if (!this.dieselNode || !this.dieselGain || !this.ctx) return;
     const now = this.ctx.currentTime;
-    // Idle at low frequency, increases with speed
-    glide(this.dieselNode.frequency, 25 + Math.abs(speed) * 5, now, 0.04);
-    glide(this.dieselGain.gain, 0.03 + Math.abs(speed) * 0.01, now, 0.04);
+    // Idle at low frequency, rising with speed; labouring (deeper and louder) under load
+    glide(this.dieselNode.frequency, 25 + Math.abs(speed) * 5 + load * 9, now, 0.04);
+    glide(this.dieselGain.gain, 0.03 + Math.abs(speed) * 0.01 + load * 0.035, now, 0.04);
   }
 
   private setupDiesel(): void {

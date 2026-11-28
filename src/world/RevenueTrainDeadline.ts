@@ -43,6 +43,26 @@ export class RevenueTrainDeadline {
   private warned = false;
   private sectionsAtStart = 0;
 
+  /** < 1: trains come sooner (heavy-traffic modifier) */
+  pace = 1;
+
+  /**
+   * Ask dispatch to hold the revenue train: +seconds on the current countdown.
+   * @returns false if no train is coming
+   */
+  requestHold(seconds: number): boolean {
+    if (!this.active) return false;
+    this.timer += seconds;
+    this.total += seconds;
+    this.warned = false;
+    return true;
+  }
+
+  /** Seconds left before the revenue train arrives, or null if none is coming */
+  get secondsLeft(): number | null {
+    return this.active ? Math.max(0, this.timer) : null;
+  }
+
   constructor(deps: DeadlineDeps) {
     this.deps = deps;
     this.bar = document.getElementById('deadline-bar')!;
@@ -75,7 +95,7 @@ export class RevenueTrainDeadline {
     if (!this.active) {
       this.timer += dt;
       trackMap.setRevenueTrainPosition(-1);
-      if (this.timer > QUIET_PERIOD) {
+      if (this.timer > QUIET_PERIOD * this.pace) {
         this.active = true;
         this.total = MIN_WINDOW + Math.random() * WINDOW_RANGE;
         this.timer = this.total;

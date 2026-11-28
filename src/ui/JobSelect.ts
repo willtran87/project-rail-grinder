@@ -5,15 +5,35 @@
  * environment theme, and difficulty settings.
  */
 
+import {
+  MODIFIERS, modifierPay, weeklyChallenge, rankFor, RANKS, CREW, MACHINES, loadDepot, saveDepot, COLLECTIBLES,
+  loadMuseum, PHOTO_CHALLENGES, loadPhotos, claimLogin, session, type ModifierId, type CrewId, type MachineId, type LoginState,
+} from '../game/engage';
+import { currentGoal } from '../game/meta';
 import * as THREE from 'three';
 import type { Region } from '../types/rail';
 import { loadRecords, formatTime, type JobRecord } from '../game/progress';
+import { generateRoute, dailyRoute, todayKey, type GeneratedRoute } from '../game/routes';
+import { LONG_HAUL_SHIFTS, type LongHaul } from '../game/depth';
+import { loadJSON, saveJSON } from '../core/storage';
+
+const HAUL_KEY = 'longhaul-v1';
+/** The long-haul contract in progress (a new one starts when the last finishes) */
+export function loadLongHaul(): LongHaul {
+  return loadJSON<LongHaul | null>(HAUL_KEY, null) ?? { seed: Math.floor(Math.random() * 1e9), shift: 0, stars: [] };
+}
+export function saveLongHaul(h: LongHaul): void { saveJSON(HAUL_KEY, h); }
+import { loadGrades, routeCondition, MEDAL_ICON, loadStats, loadBoard, LIVERIES, selectedLivery, selectLivery } from '../game/meta';
+import { ACHIEVEMENTS, unlockedAchievements } from '../game/achievements';
+import { GRADE_COLORS, type Grade } from '../game/scoring';
 import {
   loadCareer, saveCareer, buyUpgrade, nextUpgradeCost, jobPay, isUnlocked, totalBestStars,
   formatMoney, UPGRADES, type CareerState, type UpgradeId,
 } from '../game/career';
 
 export interface JobDefinition {
+  /** Opt-in risks (random routes, weekly challenge), each raising the pay */
+  modifiers?: ModifierId[];
   id: string;
   name: string;
   location: string;
@@ -29,11 +49,34 @@ export interface JobDefinition {
   scenery?: 'coast';
   /** Kind of place: picks the landmarks, weather climate and background sounds */
   region: Region;
+  /** Seed for the damage layout (default: from the job id, so it's always the same) */
+  seed?: number;
   /** Contract pay at 5★ ≈ 115% of this (see career.jobPay) */
   basePay: number;
   /** Total best stars (across all jobs) needed to take this contract */
   starsToUnlock: number;
 }
+
+/**
+ * Practice yard: a short, straight test track with one section of each kind
+ * of damage (in order), no revenue train, no pay and no records.
+ */
+/** Today and yesterday as YYYY-MM-DD (local) */
+function dayKey(offset = 0): string {
+  const d = new Date(Date.now() + offset * 86400000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export const PRACTICE_JOB: JobDefinition = {
+  id: 'practice', region: 'prairie', name: 'Practice Yard', location: 'Division test track',
+  description: 'One section of each kind of damage. No deadline, no pay — just practice.',
+  difficulty: 'Easy', difficultyColor: '#8ad0ff', basePay: 0, starsToUnlock: 0,
+  trackLength: '210m', sections: 5, defectSeverity: 0.6, timeOfDay: 1,
+  trackPoints: [
+    new THREE.Vector3(0, 0, -10), new THREE.Vector3(0, 0, 60), new THREE.Vector3(1, 0, 130),
+    new THREE.Vector3(1, 0, 200), new THREE.Vector3(0, 0, 260), new THREE.Vector3(0, 0, 320),
+  ],
+};
 
 export const JOBS: JobDefinition[] = [
   {
@@ -244,28 +287,268 @@ export class JobSelect {
     this.overlay.style.cssText = `
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       background: linear-gradient(180deg, #0a0c14 0%, #141828 50%, #0a0c14 100%);
-      display: none; justify-content: center; align-items: center;
+      display: none; justify-content: center; align-items: flex-start;
       z-index: 45; font-family: 'Inter', sans-serif; color: #fff;
-      overflow-y: auto;
+      overflow-y: auto; /* (top-aligned: centring cut off the top of tall pages) */
     `;
     document.body.appendChild(this.overlay);
   }
 
   /** "Best ★★★☆☆ · RQI 92 · 4:31" for a completed job, or a not-yet-completed hint */
-  private bestRecordHTML(record: JobRecord | undefined): string {
+  private bestRecordHTML(record: JobRecord | undefined, jobId = ''): string {
     if (!record) {
       return `<div style="margin-left: auto; color: #555;">Not completed yet</div>`;
     }
     const stars = '★'.repeat(record.bestStars) + '☆'.repeat(5 - record.bestStars);
+    const gm = loadGrades()[jobId];
+    const cond = routeCondition(jobId);
+    const condColor = cond === null ? '#888' : cond >= 85 ? '#44cc44' : cond >= 65 ? '#ffaa00' : '#ff5544';
     return `
-      <div style="margin-left: auto;" title="Your personal best (completed ${record.completions}x)">
-        <span style="color: #888;">Best</span>
+      <div style="margin-left: auto; text-align: right;" title="Your personal best (completed ${record.completions}x)">
+        ${gm ? `<span style="color: ${GRADE_COLORS[gm.grade]}; font-weight: 700; font-size: 14px;">${gm.grade}</span>
+               ${gm.medal ? MEDAL_ICON[gm.medal] : ''}` : ''}
         <span style="color: #ffdd00; letter-spacing: 1px;">${stars}</span>
         <span style="color: #aaa;">RQI ${record.bestRQI.toFixed(0)} · ${formatTime(record.bestTime)}</span>
+        ${cond !== null ? `<div style="font-size: 10px; color: ${condColor}; margin-top: 2px;"
+          title="Rail condition since your last visit — it wears down while you work elsewhere">
+          Track condition ${cond}%${cond < 85 ? ' · needs maintenance' : ''}</div>` : ''}
       </div>`;
   }
 
+  /** Turn a generated route (random / daily) into a contract */
+  static routeToJob(r: GeneratedRoute): JobDefinition {
+    const colors = { Easy: '#44cc44', Medium: '#ffaa00', Hard: '#ff6633', Expert: '#ff3366' } as const;
+    return {
+      id: r.id, name: r.name, location: r.location, description: r.description,
+      difficulty: r.difficulty, difficultyColor: colors[r.difficulty],
+      trackLength: `${r.sections * 20 + 110}m`, sections: r.sections, defectSeverity: r.defectSeverity,
+      timeOfDay: r.timeOfDay, region: r.region, seed: r.seed, basePay: r.basePay, starsToUnlock: 0,
+      scenery: r.scenery,
+      trackPoints: r.points.map(([x, z]) => new THREE.Vector3(x, 0, z)),
+    };
+  }
+
+  /** This shift of the long-haul contract, as a job */
+  static longHaulJob(totalStars: number): JobDefinition {
+    const h = loadLongHaul();
+    saveLongHaul(h);
+    const r = generateRoute(h.seed + h.shift * 7919, totalStars + 4);
+    const job = JobSelect.routeToJob(r);
+    job.id = `haul-${h.seed}-${h.shift}`;
+    job.name = `Long Haul ${h.shift + 1}/${LONG_HAUL_SHIFTS} — ${r.name}`;
+    job.basePay = Math.round(r.basePay * 1.2);
+    return job;
+  }
+
+  /** Which tab of the contract screen is showing */
+  tab: 'contracts' | 'modes' | 'upgrades' | 'depot' = 'contracts';
+  /** Modifiers the player has switched on for the random route */
+  private selectedMods: ModifierId[] = [];
+  /** Login reward shown in the header this visit (set once a day) */
+  private loginNote = '';
+
+  /** Seed for the "random route" card (re-rolled with the button) */
+  private randomSeed = Math.floor(Math.random() * 1e9);
+
+  /** Daily contract + random route cards, and the career button */
+  private modesHTML(totalStars: number, records: Record<string, JobRecord>): string {
+    const daily = dailyRoute();
+    const dRec = records[daily.id];
+    const stats = loadStats();
+    const streak = stats.lastDaily === todayKey() ? stats.dailyStreak : 0;
+    const rnd = generateRoute(this.randomSeed, totalStars);
+    const card = `background: rgba(255,170,0,0.06); border: 1px solid rgba(255,170,0,0.3); border-radius: 8px;
+      padding: 14px 16px; cursor: pointer;`;
+    return `
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+        <div data-mode="daily" style="${card}">
+          <div style="font-size: 10px; letter-spacing: 3px; color: #ffaa00;">DAILY CONTRACT · ${todayKey()}</div>
+          <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">${daily.name.replace('Daily Contract — ', '')}</div>
+          <div style="font-size: 11px; color: #888; margin-top: 2px;">${daily.location} · ${daily.sections} sections · ${daily.difficulty}</div>
+          <div style="font-size: 11px; margin-top: 6px; color: #aaa;">
+            ${dRec ? `Today's best: <span style="color:#ffdd00">${'★'.repeat(dRec.bestStars)}</span> · RQI ${dRec.bestRQI.toFixed(0)}` : 'Same route for everyone today — set your best'}
+            ${streak > 1 ? ` · <span style="color:#ff8844">🔥 ${streak}-day streak</span>` : ''}
+          </div>
+        </div>
+        <div data-mode="random" style="${card}">
+          <div style="display:flex; justify-content: space-between; align-items: center;">
+            <div style="font-size: 10px; letter-spacing: 3px; color: #ffaa00;">RANDOM ROUTE</div>
+            <button data-reroll title="A different route" style="background: rgba(255,255,255,0.08); color: #ddd; border: 1px solid #555;
+              border-radius: 4px; font-size: 11px; padding: 2px 8px; cursor: pointer;">↻ NEW</button>
+          </div>
+          <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">${rnd.name}</div>
+          <div style="font-size: 11px; color: #888; margin-top: 2px;">${rnd.location} · ${rnd.sections} sections · ${rnd.difficulty}
+            · pays up to <span style="color:#44cc44">${formatMoney(jobPay(rnd.basePay, 5))}</span></div>
+          <div style="font-size: 11px; color: #777; margin-top: 6px;">Never the same twice — harder as your career grows</div>
+          <div style="display:flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;">
+            ${(Object.keys(MODIFIERS) as ModifierId[]).map((id) => { const on = this.selectedMods.includes(id); return `<button data-mod="${id}"
+              title="${MODIFIERS[id].desc}" style="font-size: 10px; padding: 2px 6px; border-radius: 10px; cursor: pointer;
+              border: 1px solid ${on ? '#ff8844' : '#444'}; background: ${on ? 'rgba(255,136,68,0.25)' : 'transparent'}; color: ${on ? '#ffbb88' : '#999'};">
+              ${MODIFIERS[id].name} ×${MODIFIERS[id].pay}</button>`; }).join('')}
+          </div>
+          ${this.selectedMods.length ? `<div style="font-size: 11px; color: #ff8844; margin-top: 4px;">Risk pay ×${modifierPay(this.selectedMods)}</div>` : ''}
+        </div>
+        ${(() => {
+          const w = weeklyChallenge();
+          const wr = generateRoute(w.seed % 1000000000, totalStars + 6);
+          const best = records[`weekly-${w.week}`];
+          return `<div data-mode="weekly" style="${card} border-color: rgba(138,208,255,0.4); background: rgba(138,208,255,0.05);">
+          <div style="font-size: 10px; letter-spacing: 3px; color: #8ad0ff;">WEEKLY CHALLENGE · ${w.week}</div>
+          <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">${wr.name}</div>
+          <div style="font-size: 11px; color: #888; margin-top: 2px;">${wr.location} · ${wr.sections} sections · ${w.modifiers.map((m) => MODIFIERS[m].name).join(' + ')}</div>
+          <div style="font-size: 11px; margin-top: 6px; color: #aaa;">${best ? `Your best this week: <span style="color:#ffdd00">${'★'.repeat(best.bestStars)}</span>` : 'Same challenge for everyone all week'} · pay ×${modifierPay(w.modifiers)}</div>
+        </div>`;
+        })()}
+        ${(() => {
+          const h = loadLongHaul();
+          return `<div data-mode="longhaul" style="${card}">
+          <div style="font-size: 10px; letter-spacing: 3px; color: #ffaa00;">LONG HAUL · SHIFT ${h.shift + 1}/${LONG_HAUL_SHIFTS}</div>
+          <div style="font-size: 15px; font-weight: 600; margin-top: 4px;">Three-shift contract</div>
+          <div style="font-size: 11px; color: #888; margin-top: 2px;">${h.stars.length ? 'So far: ' + h.stars.map((s) => '★'.repeat(s)).join(' · ') : 'Longer routes, +20% pay'}</div>
+          <div style="font-size: 11px; color: #777; margin-top: 6px;">A weak shift leaves more damage for the next. Finish all three for a big bonus.</div>
+        </div>`;
+        })()}
+        <button data-practice title="A short test track: one section of each kind of damage, no deadline, no pay"
+          style="background: rgba(120,200,255,0.06); color: #cfe8ff; border: 1px solid rgba(120,200,255,0.3);
+          border-radius: 8px; padding: 0 14px; cursor: pointer; font-size: 12px; letter-spacing: 2px;">PRACTICE<br>YARD</button>
+        <button data-career style="background: rgba(255,255,255,0.05); color: #ddd; border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 8px; padding: 0 18px; cursor: pointer; font-size: 12px; letter-spacing: 2px;">CAREER<br>&amp;<br>RECORDS</button>
+      </div>`;
+  }
+
+  /**
+   * Career page: totals, achievements, paint schemes, and each contract's
+   * leaderboard. BACK returns to the job list.
+   */
+  private renderCareer(resolve: (job: JobDefinition) => void): void {
+    const s = loadStats();
+    const got = unlockedAchievements();
+    const records = loadRecords();
+    const grades = loadGrades();
+    const progress = {
+      stars: totalBestStars(records), sGrades: s.sGrades, perfects: s.perfects,
+      achievements: Object.keys(got).length, dailies: s.dailies,
+    };
+    const current = selectedLivery();
+    const stat = (label: string, value: string) => `<div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 6px; padding: 10px 12px;"><div style="font-size: 10px; color: #888; letter-spacing: 1px;">${label}</div>
+      <div style="font-size: 18px; font-weight: 600; margin-top: 2px;">${value}</div></div>`;
+    const boards = JOBS.map((j) => {
+      const b = loadBoard(j.id);
+      if (!b.length) return '';
+      return `<div style="margin-bottom: 10px;"><div style="font-size: 12px; color: #ffcc55; margin-bottom: 3px;">${j.name}</div>
+        ${b.slice(0, 5).map((e, i) => `<div style="font-family: var(--ui-mono, monospace); font-size: 11px; color: ${i === 0 ? '#ffdd00' : '#bbb'};">
+          ${i + 1}. ${e.initials.padEnd(3)} &nbsp;$${e.score.toLocaleString('en-US')} &nbsp;<span style="color:${GRADE_COLORS[e.grade as Grade]}">${e.grade}</span> &nbsp;${formatTime(e.time)}</div>`).join('')}</div>`;
+    }).join('') || '<div style="color:#666; font-size: 12px;">No runs on the board yet.</div>';
+
+    this.overlay.innerHTML = `
+      <div style="max-width: 900px; padding: 30px 20px; margin: 20px auto;">
+        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+          <div style="font-size: 24px; font-weight: 700; letter-spacing: 2px;">CAREER</div>
+          <button data-back style="background: var(--ui-accent, #e8a020); color: #000; border: none; border-radius: 4px; padding: 8px 18px; cursor: pointer; font-weight: 600;">BACK TO JOBS</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px;">
+          ${stat('CONTRACTS DONE', String(s.jobs))}
+          ${stat('SECTIONS RESTORED', String(s.sections))}
+          ${stat('TRACK RESTORED', `${(s.feetRestored / 5280).toFixed(2)} mi`)}
+          ${stat('METAL REMOVED', `${s.metalMm.toFixed(1)} mm`)}
+          ${stat('PERFECT PASSES', String(s.perfects))}
+          ${stat('BEST COMBO', String(s.bestCombo))}
+          ${stat('S GRADES', String(s.sGrades))}
+          ${stat('EARNED', formatMoney(s.totalEarned))}
+        </div>
+        <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">BEST GRADES</div>
+        <div style="display:flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px;">
+          ${JOBS.map((j) => { const g = grades[j.id]; return `<div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 8px 12px; font-size: 12px;">
+            ${j.location} <b style="color:${g ? GRADE_COLORS[g.grade] : '#555'}; margin-left: 6px;">${g ? g.grade : '–'}</b> ${g?.medal ? MEDAL_ICON[g.medal] : ''}</div>`; }).join('')}
+        </div>
+        <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">GRINDER PAINT</div>
+        <div style="display:flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px;">
+          ${LIVERIES.map((l) => { const ok = l.unlocked(progress); const sel = l.id === current.id; return `
+            <div data-livery="${l.id}" data-ok="${ok}" title="${ok ? 'Paint the grinder' : 'Locked: ' + l.unlockText}" style="width: 118px; cursor: ${ok ? 'pointer' : 'not-allowed'};
+              border: 2px solid ${sel ? '#ffaa00' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; padding: 8px; opacity: ${ok ? 1 : 0.4};">
+              <div style="height: 22px; border-radius: 3px; background: ${l.body}; box-shadow: inset 0 -6px 0 #${l.trim.toString(16).padStart(6, '0')};"></div>
+              <div style="font-size: 11px; margin-top: 5px;">${l.name}</div>
+              <div style="font-size: 9px; color: #888;">${ok ? (sel ? 'IN USE' : 'Unlocked') : '🔒 ' + l.unlockText}</div></div>`; }).join('')}
+        </div>
+        <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">RANK</div>
+        <div style="display:flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px;">
+          ${RANKS.map((r, i) => { const here = rankFor(progress.stars).index; return `<div style="border: 1px solid ${i === here ? '#8ad0ff' : 'rgba(255,255,255,0.08)'};
+            border-radius: 6px; padding: 8px 10px; opacity: ${i <= here ? 1 : 0.45}; min-width: 130px;">
+            <div style="font-size: 12px; font-weight: 600; color: ${i === here ? '#8ad0ff' : '#ddd'};">${r.name}</div>
+            <div style="font-size: 10px; color: #888;">★ ${r.stars} · ${r.perk}</div></div>`; }).join('')}
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 22px;">
+          <div>
+            <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">MUSEUM · ${loadMuseum().length}/${COLLECTIBLES.length}</div>
+            <div style="font-size: 10px; color: #777; margin-bottom: 6px;">Something glints by the rail? Look with camera 5 (grind) as you pass.</div>
+            ${COLLECTIBLES.map((c) => { const got = loadMuseum().includes(c.id); return `<div style="padding: 3px 0; font-size: 12px; opacity: ${got ? 1 : 0.4};">
+              ${got ? '🏺' : '·'} ${got ? c.name : '???'} ${got ? `<span style="font-size: 10px; color: #888;">— ${c.note}</span>` : ''}</div>`; }).join('')}
+          </div>
+          <div>
+            <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">PHOTO CHALLENGES · ${loadPhotos().length}/${Object.keys(PHOTO_CHALLENGES).length}</div>
+            <div style="font-size: 10px; color: #777; margin-bottom: 6px;">Press F for photo mode, K to take the picture.</div>
+            ${Object.entries(PHOTO_CHALLENGES).map(([id, p]) => { const got = loadPhotos().includes(id as never); return `<div style="padding: 3px 0; font-size: 12px; opacity: ${got ? 1 : 0.55};">
+              ${got ? '📸' : '·'} ${p.name} <span style="font-size: 10px; color: #888;">— ${p.how} (${formatMoney(p.reward)})</span></div>`; }).join('')}
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+          <div>
+            <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">ACHIEVEMENTS · ${Object.keys(got).length}/${ACHIEVEMENTS.length}</div>
+            ${ACHIEVEMENTS.map((a) => `<div style="padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); opacity: ${got[a.id] ? 1 : 0.45};">
+              <span style="font-size: 12px;">${got[a.id] ? '🏆' : '·'} ${a.name}</span>
+              <span style="font-size: 10px; color: #888;"> — ${a.description}</span></div>`).join('')}
+          </div>
+          <div>
+            <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 8px;">LEADERBOARDS (THIS COMPUTER)</div>
+            ${boards}
+          </div>
+        </div>
+      </div>`;
+    this.overlay.querySelector('[data-back]')!.addEventListener('click', () => this.render(resolve));
+    this.overlay.querySelectorAll<HTMLElement>('[data-livery]').forEach((el) => el.addEventListener('click', () => {
+      if (el.dataset.ok !== 'true') return;
+      selectLivery(el.dataset.livery!);
+      this.onLiveryChange?.();
+      this.renderCareer(resolve);
+    }));
+  }
+
+  /** Game hooks this to open the settings menu */
+  onOpenSettings: (() => void) | null = null;
+
+  /** Game hooks this to repaint the grinder when a new livery is picked */
+  onLiveryChange: (() => void) | null = null;
+
   /** Career summary + upgrade shop, shown under the job cards */
+  /** Depot: hire crew (perks) and buy / pick a grinding machine */
+  private depotHTML(money: number): string {
+    const d = loadDepot();
+    const btn = (attr: string, label: string, enabled: boolean) => `<button ${attr} ${enabled ? '' : 'disabled'} style="margin-top: 8px; font-size: 11px;
+      padding: 6px 12px; border-radius: 4px; cursor: ${enabled ? 'pointer' : 'default'}; border: 1px solid ${enabled ? '#ffaa00' : '#444'};
+      background: ${enabled ? 'rgba(255,170,0,0.15)' : 'transparent'}; color: ${enabled ? '#ffcc77' : '#777'};">${label}</button>`;
+    return `
+      <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin: 4px 0 10px;">MACHINES</div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 22px;">
+        ${(Object.keys(MACHINES) as MachineId[]).map((id) => { const m = MACHINES[id]; const owned = d.machines.includes(id); const active = d.active === id;
+          return `<div style="background: rgba(255,255,255,0.03); border: 1px solid ${active ? '#ffaa00' : 'rgba(255,255,255,0.08)'}; border-radius: 8px; padding: 14px;">
+            <div style="font-size: 15px; font-weight: 600;">${m.name} ${active ? '<span style="font-size: 10px; color: #ffaa00;">IN SERVICE</span>' : ''}</div>
+            <div style="font-size: 12px; color: #999; margin-top: 4px;">${m.desc}</div>
+            ${active ? '' : owned ? btn(`data-machine="${id}"`, 'PUT IN SERVICE', true) : btn(`data-machine="${id}"`, `BUY ${formatMoney(m.cost)}`, money >= m.cost)}
+          </div>`; }).join('')}
+      </div>
+      <div style="font-size: 11px; letter-spacing: 3px; color: #888; margin-bottom: 10px;">CREW</div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
+        ${(Object.keys(CREW) as CrewId[]).map((id) => { const c = CREW[id]; const hired = d.crew.includes(id);
+          return `<div style="background: rgba(255,255,255,0.03); border: 1px solid ${hired ? 'rgba(125,255,138,0.4)' : 'rgba(255,255,255,0.08)'}; border-radius: 8px; padding: 14px;">
+            <div style="font-size: 10px; letter-spacing: 2px; color: #8ad0ff;">${c.role.toUpperCase()}</div>
+            <div style="font-size: 14px; font-weight: 600; margin-top: 2px;">${c.name}</div>
+            <div style="font-size: 12px; color: #999; margin-top: 4px;">${c.perk}</div>
+            ${hired ? '<div style="margin-top: 8px; font-size: 11px; color: #7dff8a;">ON THE CREW</div>' : btn(`data-hire="${id}"`, `HIRE ${formatMoney(c.cost)}`, money >= c.cost)}
+          </div>`; }).join('')}
+      </div>`;
+  }
+
   private upgradesHTML(career: CareerState): string {
     let html = `
       <div style="margin-top: 28px;">
@@ -302,35 +585,62 @@ export class JobSelect {
   }
 
   /** Draw the whole screen; re-run after buying an upgrade */
+  /** Daily login reward ladder: claimed the first time the menu opens each day */
+  private claimLoginReward(): void {
+    const res = claimLogin(loadJSON<LoginState | null>('login-v1', null), dayKey(0), dayKey(-1));
+    if (!res) return;
+    saveJSON('login-v1', res.state);
+    const c = loadCareer();
+    c.money += res.reward;
+    saveCareer(c);
+    this.loginNote = `DAY ${res.day} LOGIN BONUS: +${formatMoney(res.reward)}${res.day < 7 ? ` — come back tomorrow for day ${res.day + 1}` : ' — top of the ladder!'}`;
+  }
+
   private render(resolve: (job: JobDefinition) => void): void {
+      this.claimLoginReward();
       const records = loadRecords();
       const career = loadCareer();
       const totalStars = totalBestStars(records);
       // Dev/testing shortcut: add ?unlock to the URL to open every contract
       const unlockAll = new URLSearchParams(window.location.search).has('unlock');
       let html = `
-        <div style="max-width: 900px; padding: 30px 20px; margin: 20px auto;">
+        <div style="width: 100%; max-width: 900px; padding: 30px 20px; margin: 20px auto; box-sizing: border-box;">
           <div style="text-align: center; margin-bottom: 20px;">
+            <button data-settings style="float: right; background: rgba(255,255,255,0.08); color: #ddd; border: 1px solid rgba(255,255,255,0.15);
+              border-radius: 4px; padding: 6px 12px; font-size: 11px; cursor: pointer;">⚙ SETTINGS</button>
             <div style="font-size: 11px; color: rgba(255,170,0,0.6); letter-spacing: 6px; margin-bottom: 6px;">SELECT CONTRACT</div>
             <div style="font-size: 28px; font-weight: 700; letter-spacing: 2px;">AVAILABLE JOBS</div>
             <div style="margin-top: 10px; font-size: 14px; color: #aaa;">
               <span style="color: #44cc44; font-weight: 700;">${formatMoney(career.money)}</span>
               &nbsp;·&nbsp; <span style="color: #ffdd00;">★ ${totalStars}</span> career stars
+              &nbsp;·&nbsp; <span style="color: #8ad0ff;" title="Perk: ${rankFor(totalStars).rank.perk}">${rankFor(totalStars).rank.name.toUpperCase()}</span>
             </div>
+            ${(() => { const g = currentGoal(); return g ? `<div style="margin-top: 6px; font-size: 12px; color: #ffcc77;">NEXT GOAL: ${g}</div>` : ''; })()}
+            ${this.loginNote ? `<div style="margin-top: 6px; font-size: 12px; color: #7dff8a;">${this.loginNote}</div>` : ''}
+            ${session.jobs > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #999;">THIS SESSION: ${session.jobs} job${session.jobs > 1 ? 's' : ''}
+              · ${formatMoney(session.earned)} · ${session.perfects} perfect passes${session.achievements ? ` · ${session.achievements} achievement${session.achievements > 1 ? 's' : ''}` : ''}${session.collectibles ? ` · ${session.collectibles} find${session.collectibles > 1 ? 's' : ''}` : ''}</div>` : ''}
           </div>
+          <div id="job-tabs" style="display: flex; gap: 6px; justify-content: center; margin-bottom: 18px;">
+            ${([['contracts', 'CONTRACTS'], ['modes', 'DAILY · WEEKLY · RANDOM'], ['upgrades', 'UPGRADES'], ['depot', 'DEPOT']] as const).map(([id, name]) =>
+              `<button data-tab="${id}" style="font-size: 12px; letter-spacing: 2px; padding: 8px 16px; border-radius: 4px; cursor: pointer;
+                border: 1px solid rgba(255,170,0,0.4); background: ${this.tab === id ? '#ffaa00' : 'rgba(255,170,0,0.06)'};
+                color: ${this.tab === id ? '#000' : '#ffcc77'};">${name}</button>`).join('')}
+          </div>
+          <div data-pane="modes" style="display: ${this.tab === 'modes' ? 'block' : 'none'};">${this.modesHTML(totalStars, records)}</div>
+          <div data-pane="contracts" style="display: ${this.tab === 'contracts' ? 'block' : 'none'};">
           <div style="display: flex; justify-content: center; margin-bottom: 20px;">
             <canvas id="us-map-canvas" width="600" height="320" style="
               background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);
               border-radius: 8px;
             "></canvas>
           </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
       `;
 
       for (const job of JOBS) {
         const unlocked = unlockAll || isUnlocked(job.starsToUnlock, totalStars);
         const status = unlocked
-          ? this.bestRecordHTML(records[job.id])
+          ? this.bestRecordHTML(records[job.id], job.id)
           : `<div style="margin-left: auto; color: #aaa;">🔒 Needs ★ ${job.starsToUnlock} (you have ${totalStars})</div>`;
         html += `
           <div class="job-card" data-job="${job.id}" data-locked="${unlocked ? 'no' : 'yes'}" style="
@@ -363,7 +673,8 @@ export class JobSelect {
         `;
       }
 
-      html += `</div>${this.upgradesHTML(career)}</div>`;
+      html += `</div></div><div data-pane="upgrades" style="display: ${this.tab === 'upgrades' ? 'block' : 'none'};">${this.upgradesHTML(career)}</div>
+        <div data-pane="depot" style="display: ${this.tab === 'depot' ? 'block' : 'none'};">${this.depotHTML(career.money)}</div></div>`;
       this.overlay.innerHTML = html;
       this.overlay.style.display = 'flex';
 
@@ -378,6 +689,73 @@ export class JobSelect {
           resolve(job);
         });
       });
+
+      // Daily contract / random route / career page
+      this.overlay.querySelector('[data-mode="daily"]')?.addEventListener('click', () => {
+        this.overlay.style.display = 'none';
+        resolve(JobSelect.routeToJob(dailyRoute()));
+      });
+      this.overlay.querySelectorAll<HTMLButtonElement>('[data-mod]').forEach((b) => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = b.dataset.mod as ModifierId;
+        this.selectedMods = this.selectedMods.includes(id) ? this.selectedMods.filter((m) => m !== id) : [...this.selectedMods, id];
+        this.render(resolve);
+      }));
+      this.overlay.querySelector('[data-mode="weekly"]')?.addEventListener('click', () => {
+        const w = weeklyChallenge();
+        const job = JobSelect.routeToJob(generateRoute(w.seed % 1000000000, totalStars + 6));
+        job.id = `weekly-${w.week}`;
+        job.name = `Weekly Challenge — ${job.name}`;
+        job.modifiers = w.modifiers;
+        this.overlay.style.display = 'none';
+        resolve(job);
+      });
+      this.overlay.querySelectorAll<HTMLButtonElement>('[data-hire]').forEach((b) => b.addEventListener('click', () => {
+        const id = b.dataset.hire as CrewId;
+        const c = loadCareer();
+        const d = loadDepot();
+        if (d.crew.includes(id) || c.money < CREW[id].cost) return;
+        c.money -= CREW[id].cost; saveCareer(c);
+        d.crew.push(id); saveDepot(d);
+        this.render(resolve);
+      }));
+      this.overlay.querySelectorAll<HTMLButtonElement>('[data-machine]').forEach((b) => b.addEventListener('click', () => {
+        const id = b.dataset.machine as MachineId;
+        const c = loadCareer();
+        const d = loadDepot();
+        if (!d.machines.includes(id)) {
+          if (c.money < MACHINES[id].cost) return;
+          c.money -= MACHINES[id].cost; saveCareer(c);
+          d.machines.push(id);
+        }
+        d.active = id; saveDepot(d);
+        this.render(resolve);
+      }));
+      this.overlay.querySelector('[data-mode="random"]')?.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('[data-reroll]') || (e.target as HTMLElement).closest('[data-mod]')) return;
+        this.overlay.style.display = 'none';
+        const job = JobSelect.routeToJob(generateRoute(this.randomSeed, totalStars));
+        job.modifiers = [...this.selectedMods];
+        resolve(job);
+      });
+      this.overlay.querySelector('[data-mode="longhaul"]')?.addEventListener('click', () => {
+        this.overlay.style.display = 'none';
+        resolve(JobSelect.longHaulJob(totalStars));
+      });
+      this.overlay.querySelector('[data-reroll]')?.addEventListener('click', () => {
+        this.randomSeed = Math.floor(Math.random() * 1e9);
+        this.render(resolve);
+      });
+      this.overlay.querySelector('[data-career]')?.addEventListener('click', () => this.renderCareer(resolve));
+      this.overlay.querySelectorAll<HTMLButtonElement>('#job-tabs [data-tab]').forEach((b) => b.addEventListener('click', () => {
+        this.tab = b.dataset.tab as typeof this.tab;
+        this.render(resolve);
+      }));
+      this.overlay.querySelector('[data-practice]')?.addEventListener('click', () => {
+        this.overlay.style.display = 'none';
+        resolve(PRACTICE_JOB);
+      });
+      this.overlay.querySelector('[data-settings]')?.addEventListener('click', () => this.onOpenSettings?.());
 
       // Upgrade purchases: spend money, save, redraw the screen
       this.overlay.querySelectorAll('.buy-upgrade').forEach((btn) => {

@@ -6,7 +6,9 @@
  * Reduces draw calls from ~3000 to ~30.
  */
 
+import { applyWindSway } from './Atmos';
 import * as THREE from 'three';
+import { SEASON_LOOK, type Season } from './Seasons';
 import { bakeStatic, createVertexPbrMaterial } from '../core/bakeStatic';
 import type { RailTrack } from '../rail/RailTrack';
 import { createBallastGeometry, createBallastMaterial } from './trackBed';
@@ -26,6 +28,8 @@ export interface EnvironmentOptions {
   trees?: number;
   /** Distant mountain ranges: 0 = none (flat horizon), 1 = default, >1 = taller */
   mountains?: number;
+  /** Time of year (see world/Seasons.ts); default summer */
+  season?: Season;
 }
 
 const SNOW_WHITE = new THREE.Color(0xe6ecf2);
@@ -84,16 +88,57 @@ export class Environment {
     this.addTrackSideDetails();
     this.addDistantMountains();
     // (stars now come from the SkyDome shader, which fades them in only at night)
+    if (options.season && options.season !== 'summer' && !(options.snow && options.snow > 0.3)) {
+      this.applySeason(options.season);
+    }
     if (options.snow) this.applySnow(options.snow);
     // Thousands of trees, bushes, rocks and grass tufts: shade them with the
     // cheaper matte material (they're fully rough, so it looks the same)
     this.group.traverse((o) => {
       const inst = o as THREE.InstancedMesh;
-      if (inst.isInstancedMesh) inst.material = toMatte(inst.material as THREE.Material);
+      if (!inst.isInstancedMesh) return;
+      const sway = (inst.material as THREE.Material).userData.sway;
+      inst.material = toMatte(inst.material as THREE.Material);
+      // Trees, bushes and grass move in the wind (see world/Atmos.ts)
+      if (sway && !(inst.material as THREE.Material).userData.swayApplied) {
+        applyWindSway(inst.material as THREE.Material);
+        (inst.material as THREE.Material).userData.swayApplied = true;
+      }
     });
     // Hundreds of one-off poles, signs, hills and mountains never move:
     // merge them into one mesh per material (instanced trees etc. are skipped)
     bakeStatic(this.group, { vertexMaterial: createVertexPbrMaterial() });
+  }
+
+  /** Deciduous canopies (recoloured per tree for the season) */
+  private decCanopy: THREE.InstancedMesh | null = null;
+
+  /**
+   * Season look: recolour each deciduous tree, tint the grass, bushes and
+   * hills. Pines are evergreen and keep their colour.
+   */
+  private applySeason(season: Season): void {
+    const look = SEASON_LOOK[season];
+    if (this.decCanopy) {
+      (this.decCanopy.material as THREE.MeshStandardMaterial).color.set(0xffffff);
+      const c = new THREE.Color();
+      for (let i = 0; i < this.decCanopy.count; i++) {
+        c.set(look.canopy[Math.floor(Math.random() * look.canopy.length)]);
+        this.decCanopy.setColorAt(i, c);
+      }
+      if (this.decCanopy.instanceColor) this.decCanopy.instanceColor.needsUpdate = true;
+    }
+    if (look.grassAmount <= 0) return;
+    const tint = new THREE.Color(look.grass);
+    const seen = new Set<THREE.Material>();
+    this.group.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (!mat || seen.has(mat) || !mat.isMeshStandardMaterial || mat.userData.evergreen) return;
+      if (this.decCanopy && mat === this.decCanopy.material) return;
+      seen.add(mat);
+      const col = mat.color;
+      if (col.g > col.r && col.g > col.b && mat.emissiveIntensity <= 0.1) col.lerp(tint, look.grassAmount);
+    });
   }
 
   /**
@@ -276,6 +321,8 @@ export class Environment {
     // Pine tree canopy instances
     const coneGeo = new THREE.ConeGeometry(1, 2, 7);
     const pineMat = new THREE.MeshStandardMaterial({ color: 0x1e5520, flatShading: true });
+    pineMat.userData.evergreen = true;
+    pineMat.userData.sway = true;
     const trunkGeo = new THREE.CylinderGeometry(0.08, 0.14, 1.5, 6);
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 0.9 });
 
@@ -322,6 +369,7 @@ export class Environment {
     // Deciduous trees (round canopy)
     const decGeo = new THREE.DodecahedronGeometry(1, 1);
     const decMat = new THREE.MeshStandardMaterial({ color: 0x3a7a2a, flatShading: true });
+    decMat.userData.sway = true;
     const decPositions: typeof positions = [];
     for (let i = 0; i < 100 * this.lengthScale * Math.min(1, (this.options.trees ?? 1) * 1.5); i++) {
       const z = this.rand(-10, this.zEnd);
@@ -343,13 +391,15 @@ export class Environment {
       decTrunkInst.setMatrixAt(i, m);
 
       p.set(t.x, -0.6 + t.scale * 2.5, t.z);
-      s.set(t.scale * 1.2, t.scale * 0.9, t.scale * 1.2);
+      const cs = SEASON_LOOK[this.options.season ?? 'summer'].canopyScale;
+      s.set(t.scale * 1.2 * cs, t.scale * 0.9 * cs, t.scale * 1.2 * cs);
       m.compose(p, q, s);
       decInst.setMatrixAt(i, m);
     }
     decInst.instanceMatrix.needsUpdate = true;
     decTrunkInst.instanceMatrix.needsUpdate = true;
     decInst.castShadow = true;
+    this.decCanopy = decInst;
     this.group.add(decInst);
     this.group.add(decTrunkInst);
   }
@@ -358,6 +408,7 @@ export class Environment {
   private addInstancedBushes(): void {
     const geo = new THREE.DodecahedronGeometry(0.5, 0);
     const mat = new THREE.MeshStandardMaterial({ color: 0x3a6a28, flatShading: true });
+    mat.userData.sway = true;
     const positions: THREE.Matrix4[] = [];
     const m = new THREE.Matrix4();
 
@@ -410,6 +461,7 @@ export class Environment {
   private addInstancedGrass(): void {
     const geo = new THREE.ConeGeometry(0.06, 0.3, 3);
     const mat = new THREE.MeshStandardMaterial({ color: 0x4a7a35 });
+    mat.userData.sway = true;
     const positions: THREE.Matrix4[] = [];
     const m = new THREE.Matrix4();
 

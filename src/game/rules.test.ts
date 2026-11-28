@@ -19,7 +19,8 @@ describe('grinding physics', () => {
 
   it('overheated stones cut less', () => {
     expect(heatPenalty(30)).toBe(1);
-    expect(heatPenalty(70)).toBeLessThan(1);
+    expect(heatPenalty(70)).toBeGreaterThan(1);   // hot-cut zone: faster
+    expect(heatPenalty(90)).toBeLessThan(1);      // overheated: glazed
     expect(heatPenalty(90)).toBeLessThan(heatPenalty(70));
   });
 
@@ -80,5 +81,14 @@ describe('sectionProgress', () => {
 
   it('never goes negative if grinding makes things worse', () => {
     expect(sectionProgress(0.5, 0.3, false)).toBe(0);
+  });
+});
+
+describe('job-event money', () => {
+  it('fines and bonuses are positive whole dollars, fines bigger than the matching bonus', async () => {
+    const { EVENT_PAY } = await import('./rules');
+    for (const v of Object.values(EVENT_PAY)) { expect(v).toBeGreaterThan(0); expect(Number.isInteger(v)).toBe(true); }
+    expect(EVENT_PAY.fireFine).toBeGreaterThan(EVENT_PAY.fireOut);
+    expect(EVENT_PAY.fireCloseCall).toBeGreaterThan(EVENT_PAY.fireOut);
   });
 });

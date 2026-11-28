@@ -48,6 +48,8 @@ export class SparkSystem {
   private emitPoints: EmitPoint[] = [];
   private emitting = false;
   private intensity = 1;
+  /** 0..1 stone heat (see setEmitPoints) */
+  private heat = 0;
   /** Indices of dead sparks, ready to reuse (no searching through all 800) */
   private freeIdx: number[] = [];
   private aliveCount = 0;
@@ -93,11 +95,19 @@ export class SparkSystem {
    * Set multiple emit points (one per grindstone or grinding car).
    * Call each frame while grinding with all active grind positions.
    */
-  setEmitPoints(points: EmitPoint[], intensity: number): void {
+  /**
+   * @param intensity - ~pressure / 50: more pressure, more sparks
+   * @param heat - 0..1 stone heat: hot stones throw longer, whiter-hot sparks
+   */
+  setEmitPoints(points: EmitPoint[], intensity: number, heat = 0): void {
     this.emitPoints = points;
     this.intensity = intensity;
+    this.heat = heat;
     this.emitting = true;
   }
+
+  /** Spark colour: 'good' orange-white, 'off' dull red, 'over' blue-white */
+  mode: 'good' | 'off' | 'over' = 'good';
 
   stopEmitting(): void {
     this.emitting = false;
@@ -173,8 +183,12 @@ export class SparkSystem {
         r = 1.0 - s * 0.6; g = 0.2 - s * 0.2; b = 0.05;
       }
 
+      if (this.mode === 'over') { const k = 1 - t; r = r * 0.6 + 0.3 * k; g = g * 0.6 + 0.4 * k; b = Math.max(b, 0.95 * k); }
+      else if (this.mode === 'off') { g *= 0.55; b *= 0.4; }
+
       // Head: hot (brighter than white early on → bloom), cooling with age
-      const heat = 1 + (HEAT_GLOW - 1) * (1 - t);
+      // Hotter stones: sparks stay white-hot longer (and glow harder)
+      const heat = 1 + (HEAT_GLOW * (1 + this.heat * 0.6) - 1) * (1 - t);
       this.colors[v] = r * heat;
       this.colors[v + 1] = g * heat;
       this.colors[v + 2] = b * heat;
@@ -239,7 +253,7 @@ export class SparkSystem {
 
     spark.alive = true;
     spark.age = 0;
-    spark.maxAge = SPARK_LIFETIME * (0.4 + Math.random() * 0.6);
+    spark.maxAge = SPARK_LIFETIME * (0.4 + Math.random() * 0.6) * (0.85 + this.heat * 0.5);
 
     // Position at the emit point with slight random scatter
     spark.position.copy(ep.position);

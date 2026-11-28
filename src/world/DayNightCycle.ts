@@ -150,6 +150,8 @@ export class DayNightCycle {
   /** Where the clock is heading when N fast-forwards it */
   private clockTarget: number = 1;
   private sunDir = new THREE.Vector3();
+  /** Direction toward the sun (or moon), for sun shafts */
+  get sunDirection(): THREE.Vector3 { return this.sunDir; }
   private _shadowCentre = new THREE.Vector3();
   private _camFwd = new THREE.Vector3();
   private _lx = new THREE.Vector3();
@@ -166,6 +168,13 @@ export class DayNightCycle {
   overcast = 0;
   /** 0..1 snow on the ground (snowy routes) */
   snowCover = 0;
+  /** Season tint for the ground (null = summer / none) and how much */
+  seasonGround: THREE.Color | null = null;
+  seasonAmount = 0;
+  /** Multiplies fog distances (the end-of-job vista pushes the fog back) */
+  fogScale = 1;
+  /** 0..1 how wet everything is after rain (darker ground) */
+  wetness = 0;
   /** Set to 1 while grinding: brightens exposure at night so sparks pop */
   grindBoost = 0;
 
@@ -320,6 +329,11 @@ export class DayNightCycle {
     this._darkness = Math.max(0, Math.min(1, 1 - lum / 0.08));
 
     this.applyWeather();
+    if (this.fogScale !== 1) {
+      const fog = this.scene.fog as THREE.Fog;
+      fog.near *= this.fogScale;
+      fog.far *= this.fogScale;
+    }
 
     // Grinding in the dark: lift exposure so the sparks light up the scene
     const boost = this.boost * this._darkness;
@@ -348,6 +362,12 @@ export class DayNightCycle {
       this.ambient.intensity *= 1 - 0.1 * o;
       if (this.post) this.post.grade.uSaturation.value *= 1 - 0.25 * o;
       this._darkness = Math.min(1, this._darkness + 0.15 * o);
+    }
+    if (this.groundMesh && this.seasonGround && this.seasonAmount > 0 && this.snowCover < 0.3) {
+      (this.groundMesh.material as THREE.MeshLambertMaterial).color.lerp(this.seasonGround, this.seasonAmount);
+    }
+    if (this.groundMesh && this.wetness > 0.01) {
+      (this.groundMesh.material as THREE.MeshLambertMaterial).color.multiplyScalar(1 - 0.3 * this.wetness);
     }
     const s = this.snowCover;
     if (s > 0.001) {

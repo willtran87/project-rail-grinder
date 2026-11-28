@@ -312,11 +312,15 @@ export class RailTrack {
    * Ballast: the sloped bed of crushed stone under the ties, built from
    * textured trapezoid "prism" pieces that follow the curve (one draw call).
    */
+  /** The ballast's material (Game makes it darker and glossier when wet) */
+  ballastMaterial: THREE.MeshStandardMaterial | null = null;
+
   private buildBallast(): void {
     const chunkLength = 5;            // metres per piece
     const pieceLength = chunkLength + 0.3; // slight overlap hides seams on curves
     const geometry = createBallastGeometry(GAUGE_WIDTH + 1.4, GAUGE_WIDTH + 3.0, 0.4, pieceLength);
     const material = createBallastMaterial(0xc8c4bc);
+    this.ballastMaterial = material;
 
     const chunkCount = Math.floor(this.totalLength / chunkLength);
     const ballast = new THREE.InstancedMesh(geometry, material, chunkCount);
