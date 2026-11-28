@@ -7,6 +7,7 @@
  * Purely cosmetic: the actual metal removal happens in Game.handleGrinding.
  */
 
+import { GrindSpray } from './GrindSpray';
 import * as THREE from 'three';
 import { SparkSystem } from './SparkSystem';
 import { GrindContact } from './GrindContact';
@@ -31,6 +32,8 @@ export class GrindEffects {
   private sparks: SparkSystem;
   private contact: GrindContact;
   private dust: DustSystem;
+  /** 0..1 stone heat, set by Game each frame (hotter = longer, brighter sparks) */
+  stoneHeat = 0;
   /** 0..1 multiplier on dust emission (graphics quality setting) */
   dustAmount = 1;
   private _dustOrigin = new THREE.Vector3();
@@ -39,6 +42,11 @@ export class GrindEffects {
   private _burstPos = new THREE.Vector3();
   // Pre-allocated emit points (avoids creating 96 vectors every frame)
   private emitPool: EmitPoint[] = [];
+  /** How the cut is going (sets spark colour): on target, off the hump, over-grinding */
+  sparkMode: 'good' | 'off' | 'over' = 'good';
+  /** Ballast chips and water mist under the stones */
+  readonly spray = new GrindSpray();
+  private lastDt = 1 / 60;
 
   constructor(scene: THREE.Scene) {
     this.sparks = new SparkSystem();
@@ -49,6 +57,8 @@ export class GrindEffects {
 
     this.contact = new GrindContact();
     scene.add(this.contact.group);
+
+    this.spray.addTo(scene);
 
     for (let i = 0; i < LIGHT_OFFSETS.length; i++) {
       const light = new THREE.PointLight(0xff8833, 0, LIGHT_RANGE[i]);
@@ -63,6 +73,8 @@ export class GrindEffects {
 
   /** Animate particles and glow — call every frame */
   update(dt: number): void {
+    this.lastDt = dt;
+    this.spray.update(dt);
     this.sparks.update(dt);
     this.dust.update(dt);
     this.contact.update(dt);
@@ -82,15 +94,17 @@ export class GrindEffects {
    * Section-complete celebration: little spark fountains rippling along both
    * rails of the finished section, one after another (start → end).
    */
-  celebrate(track: RailTrack, startDist: number, endDist: number): void {
-    const FOUNTAINS = 8;
+  celebrate(track: RailTrack, startDist: number, endDist: number, strength = 1): void {
+    // strength: 0.6 (1 star) … 2 (perfect pass) — more and bigger fountains
+    const FOUNTAINS = Math.round(8 * Math.min(1.5, strength));
+    const perFountain = Math.round(14 * strength);
     for (let i = 0; i < FOUNTAINS; i++) {
       const d = startDist + ((i + 0.5) / FOUNTAINS) * (endDist - startDist);
       setTimeout(() => {
         const tp = track.getTrackPoint(d);
         for (const side of [-1, 1]) {
           this._burstPos.copy(tp.position).addScaledVector(tp.right, side * 0.8);
-          this.sparks.burst(this._burstPos, 14);
+          this.sparks.burst(this._burstPos, perFountain);
         }
       }, i * 70);
     }
@@ -101,15 +115,30 @@ export class GrindEffects {
    * @param light - roughly the colour of the ambient light right now
    * @param pixelScale - render height / (2·tan(fov/2)), for correct puff sizes
    */
-  setDustLook(light: THREE.Color, pixelScale: number): void {
+  setDustLook(light: THREE.Color, pixelScale: number, darkness = 0): void {
     this.dust.setColor(light);
+    // Bright daylight makes pale dust look like solid white walls: thin it out
+    this.dust.opacity = 0.4 + 0.6 * darkness;
     this.dust.setScale(pixelScale);
+  }
+
+  /** The stones hit the rail: a burst of sparks under every grinding car */
+  stoneImpact(): void {
+    for (let c = 0; c < GRIND_CAR_OFFSETS.length; c++) {
+      this.sparks.burst(this.emitPool[c * STONES_PER_CAR + 3].position, 10);
+    }
+  }
+
+  /** A small shower of welding sparks at a point (broken-rail repair) */
+  weldSparks(at: THREE.Vector3): void {
+    this.sparks.burst(at, 6);
   }
 
   /** Stop sparks and glow immediately (e.g. on restart) */
   stop(): void {
     this.sparks.stopEmitting();
     this.contact.setInactive();
+    this.spray.stop();
   }
 
   /**
@@ -149,7 +178,8 @@ export class GrindEffects {
         ep.right.copy(tp.right);
       }
     }
-    this.sparks.setEmitPoints(this.emitPool, avgPressure / 50);
+    this.sparks.setEmitPoints(this.emitPool, avgPressure / 50 * (this.sparkMode === 'off' ? 0.5 : 1), this.stoneHeat);
+    this.sparks.mode = this.sparkMode;
 
     // Dust: each grinding car occasionally puffs a cloud off each rail.
     // More pressure = more dust. It lags behind as the consist moves on.
@@ -163,6 +193,8 @@ export class GrindEffects {
       this._dustDrift.copy(ep.forward).multiplyScalar(-0.4).addScaledVector(ep.right, side * 0.5);
       this.dust.emit(this._dustOrigin, this._dustDrift);
     }
+
+    this.spray.emit(this.lastDt, this.emitPool, avgPressure);
 
     // Contact glow at the centre of the grinding section
     const centre = track.getTrackPoint(clamp(grinderPosition + 6));

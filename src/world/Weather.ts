@@ -19,6 +19,7 @@
  * Key P forces showers on/off (the director carries on afterwards).
  */
 
+import { windUniforms } from './Atmos';
 import * as THREE from 'three';
 
 import type { Region } from '../types/rail';
@@ -184,13 +185,14 @@ export class Weather {
     const top = TOP.toFixed(1);
     mat.customProgramCacheKey = () => 'weather-' + kind;
     mat.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, u);
+      Object.assign(shader.uniforms, u, { uWind: windUniforms.uWind });
       const motion = kind === 'rain' ? /* glsl */ `
         float H = ${top} + 1.0;                           // falls from TOP to -1
         float y = ${top} - mod(uTime * aSeed.w + aSeed.z * H, H);
         vec2 xz = aSeed.xy + vec2(2.0, 1.0) * uTime;      // wind drift
         float landY = y - aSeed.w * 0.04;                  // bottom of the streak
-        vec3 transformed = vec3(0.0, y - aEnd * aSeed.w * 0.04, 0.0);
+        // the lower end of each streak leans downwind: more slant in a stronger wind
+        vec3 transformed = vec3(aEnd * 0.09 * uWind, y - aEnd * aSeed.w * 0.04, aEnd * 0.045 * uWind);
       ` : /* glsl */ `
         float H = ${top};
         float fall = 1.2 + fract(aSeed.w) * 0.8;
@@ -204,6 +206,7 @@ export class Weather {
         attribute vec4 aSeed;
         ${kind === 'rain' ? 'attribute float aEnd;' : ''}
         uniform float uTime;
+        uniform float uWind;
         uniform vec2 uCentre;
         uniform vec2 uShelter[${MAX_SHELTER}];
         uniform int uShelterCount;

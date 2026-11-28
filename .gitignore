@@ -5,3 +5,6 @@ dist/
 
 # Git Bash crash dumps
 *.stackdump
+
+# Screenshot check output (scripts/visual-check.mjs)
+visual/current/

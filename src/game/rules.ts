@@ -41,9 +41,15 @@ export function heatRatePerSec(avgPressure: number): number {
   return avgPressure * 0.12 - 3;
 }
 
-/** Overheated stones cut less: full effect below 60 heat, 80% to 80, 50% above */
+/**
+ * How hard the stones cut at a given heat:
+ *   below 60  normal (×1)
+ *   60–80     the "hot cut" zone: ×1.25 — faster, but one slip over 80
+ *             overheats (breaks your combo, spoils a perfect pass)
+ *   above 80  overheated: glazed stones barely cut (×0.5)
+ */
 export function heatPenalty(heat: number): number {
-  return heat > 80 ? 0.5 : heat > 60 ? 0.8 : 1.0;
+  return heat > 80 ? 0.5 : heat > 60 ? 1.25 : 1.0;
 }
 
 /** Metal removed per second at the stone centre (mm): ~0.03 at 50%, ~0.05 at 100% */
@@ -92,3 +98,27 @@ export function sectionProgress(startMean: number, nowMean: number, completed: b
 export function approachSpeedLimit(limit: number, brake: number, distanceAhead: number): number {
   return Math.sqrt(limit * limit + 2 * brake * Math.max(0, distanceAhead));
 }
+
+// ---------------------------------------------------------------------------
+// Job events: fines and bonuses (dollars). Rebalance here.
+// ---------------------------------------------------------------------------
+export const EVENT_PAY = {
+  /** Passing a work crew over the limit */
+  safetyFine: 300,
+  /** Running over a broken rail */
+  brokenRailFine: 800,
+  /** Letting a lineside fire spread */
+  fireFine: 400,
+  /** Putting a fire out in time */
+  fireOut: 100,
+  /** ...just before it would have spread */
+  fireCloseCall: 250,
+  /** Asking dispatch to hold the revenue train (before rank perks) */
+  trainHold: 500,
+  /** Clearing a section with the revenue train under 15 s away */
+  trainCloseCall: 250,
+  /** Finishing a section in no more passes than estimated */
+  underPar: 30,
+  /** Per second the revenue train is still away when the job ends */
+  earlyClearPerSecond: 4,
+} as const;

@@ -31,7 +31,7 @@ import { TrackMap } from './ui/TrackMap';
 import { FloatingScore } from './ui/FloatingScore';
 import { RadioDispatch } from './ui/RadioDispatch';
 import { InspectionReport } from './ui/InspectionReport';
-import { JobSelect, type JobDefinition } from './ui/JobSelect';
+import { JobSelect, JOBS, type JobDefinition } from './ui/JobSelect';
 import { eventBus } from './core/EventBus';
 import { disposeObject3D } from './core/dispose';
 import { CameraController } from './core/CameraController';
@@ -40,11 +40,46 @@ import type { TargetProfile, Region } from './types/rail';
 import {
   COMPLETION_ACCURACY, GRIND_SPEED, COOL_RATE,
   stoneGrindX, stoneContactWidth, heatRatePerSec, heatPenalty, removalRatePerSec,
-  sectionStars, jobStars, sectionProgress, approachSpeedLimit,
+  sectionStars, jobStars, sectionProgress, approachSpeedLimit, EVENT_PAY,
 } from './game/rules';
 import { sectionAccuracy, sectionMeanAccuracy, sectionWorstDeviation } from './game/sectionMetrics';
-import { recordResult } from './game/progress';
-import { loadCareer, saveCareer, upgradeEffects, jobPay } from './game/career';
+import { recordResult, loadRecords, formatTime } from './game/progress';
+import { getSettings, updateSettings, onSettingsChange } from './core/settings';
+import { SettingsMenu } from './ui/SettingsMenu';
+import { Toast } from './ui/Toast';
+import { LinesideFire } from './world/LinesideFire';
+import { TrackCrews, WORK_ZONE_SPEED, WORK_ZONE_HALF } from './world/TrackCrews';
+import { loadJSON, saveJSON } from './core/storage';
+import { featuresFor, lessonFor } from './game/lessons';
+import { seasonForMonth, SEASON_LOOK, applyCloudShadows, type Season } from './world/Seasons';
+import { Wildlife } from './world/Wildlife';
+import { Atmos } from './world/Atmos';
+import {
+  trackClassFor, applyTemplate, TRACK_CLASSES, curvePeaks, STONE_GRADES, planBonus, weatherModifiers,
+  REGROWTH_INTERVAL, REGROWTH_AMOUNT, EMERGENCY_SECONDS, EMERGENCY_PAY, pickEmergencySection,
+  longHaulSeverity, longHaulBonus, LONG_HAUL_SHIFTS, type StoneGrade, type TrackClass,
+} from './game/depth';
+import { loadLongHaul, saveLongHaul } from './ui/JobSelect';
+import { TouchControls } from './ui/TouchControls';
+import {
+  modifierPay, rankFor, rankPerks, loadDepot, MACHINES, collectibleFor, COLLECTIBLES, loadMuseum, addToMuseum,
+  completePhotos, PHOTO_CHALLENGES, earnSaver, session, type ModifierId, type PhotoId, type SaverState, type CollectibleId,
+} from './game/engage';
+import { currentGoal } from './game/meta';
+import { makeShareCard, shareBlob } from './ui/ShareCard';
+import {
+  loadGhost, saveGhost, ghostAt, GHOST_STEP, timeMedal, recordGradeAndMedal, updateRouteConditions,
+  routeCondition, conditionSeverity, boardRank, addBoardEntry, loadStats, saveStats, nextDailyStreak,
+  selectedLivery, LIVERIES, liveryProgress,
+} from './game/meta';
+import { checkAchievements, unlockedAchievements } from './game/achievements';
+import { nextStoryBeat, markStorySeen } from './game/story';
+import { todayKey } from './game/routes';
+import { Hints } from './ui/Hints';
+import { isColorblindMode } from './ui/palette';
+import { DEFECT_KINDS, CHATTER_PRESSURE, CHATTER_FACTOR, chooseSectionKinds, defectPeaks, seededRandom, hashSeed, type DefectKind } from './game/defects';
+import { Combo, isPerfectPass, jobGrade, OVERHEAT, GRADE_COLORS, type SectionRun, type Grade } from './game/scoring';
+import { loadCareer, saveCareer, upgradeEffects, jobPay, totalBestStars, formatMoney } from './game/career';
 import { PerfOverlay } from './ui/PerfOverlay';
 import { PhotoMode } from './ui/PhotoMode';
 import { loadQuality, cycleQuality, QUALITY_PRESETS, type QualityLevel } from './core/quality';
@@ -136,6 +171,9 @@ export class Game {
     if (this.grinder) return;
     this.grinder = new RailGrinder();
     this.engine.scene.add(this.grinder.group);
+    const l = selectedLivery();
+    this.grinder.setLivery(l.body, l.trim);
+    this.grinder.setUpgrades(loadCareer().upgrades);
   }
 
   // Camera views, screen shake, inspection cinematic
@@ -160,6 +198,100 @@ export class Game {
   private segmentSlowOrder: boolean[] = [];   // true = speed restricted
   private lastSectionIndex: number = -1;
   private consecutiveCompleted: number = 0;
+  private settingsMenu!: SettingsMenu;
+  private toast = new Toast();
+  // ---- Batch D: job events ----
+  /** 0..100 how much grinding the stones have left in them */
+  private stoneLife = 100;
+  /** Seconds Z has been held for a stone change */
+  private stoneChange = 0;
+  /** Grinding speed the player has set with W / S (m/s) */
+  private grindSpeedSetting = GRIND_SPEED;
+  private fire = new LinesideFire();
+  private fireBurnTime = 0;
+  private fireFined = false;
+  private crews: TrackCrews | null = null;
+  private weldTimer = -1;
+  private weldSparkTimer = 0;
+  private holdsUsed = 0;
+  /** Estimated passes per section at job start (for the "under par" bonus) */
+  private sectionPar: number[] = [];
+  private eventText = '';
+  private wasGrinding = false;
+  // ---- Depth (game/depth.ts) ----
+  private baseTargetPoints = RailProfile.createAREMA136RE();
+  private trackClass: TrackClass = 'standard';
+  private stoneGrade: StoneGrade = 'standard';
+  private plannedPasses = 0;
+  private weatherMods = weatherModifiers(0, false);
+  private weatherNoticeShown = false;
+  private regrowTimer = 0;
+  private regrowNoticeShown = false;
+  private emergency: { sec: number; left: number } | null = null;
+  private emergencyTimer = 90;
+  private emergenciesLeft = 2;
+  // ---- UI (batch H) ----
+  /** Left-rail profile of each section's middle stretch at job start (results scrubber) */
+  private profilesBefore: { x: number; y: number }[][] = [];
+  /** Stars earned per finished section */
+  private segmentStars: number[] = [];
+  private touch!: TouchControls;
+  // ---- Engagement & loop (batches I/J, game/engage.ts) ----
+  private mods: ModifierId[] = [];
+  private perks = rankPerks(0);
+  private machine = MACHINES.g17;
+  private crew = { firewatch: false, welder: false, mechanic: false, spotter: false };
+  private collectible: { id: CollectibleId; dist: number; mesh: THREE.Mesh; found: boolean } | null = null;
+  /** Every rail profile at job start (to put a section back for a retry) */
+  private startProfiles: { left: { x: number; y: number }[]; right: { x: number; y: number }[] }[] = [];
+  private retryOffer: { sec: number; until: number } | null = null;
+  /** Sections replayed for practice: they don't score */
+  private practiced = new Set<number>();
+  private resultFrame: Blob | null = null;
+  private captureRequested = false;
+  /** Which job events are switched on yet (staged tutorial, see game/lessons.ts) */
+  private features = featuresFor(0);
+  // ---- Batch E: visuals ----
+  private wildlife: Wildlife | null = null;
+  private atmos: Atmos | null = null;
+  private dawnAmount = 0;
+  private cloudShadows: ReturnType<typeof applyCloudShadows> | null = null;
+  private season: Season = 'summer';
+  private wetness = 0;
+  private lightningTimer = 8;
+  private flash = 0;
+  private hazeLevel = 0;
+  /** End-of-job vista: seconds into the shot, or -1 */
+  private vistaTime = -1;
+  private _fxVec = new THREE.Vector3();
+  /** Best run's positions over time (raced on the track map), and this run's */
+  private ghost: number[] | null = null;
+  private ghostSamples: number[] = [];
+  private ghostTimer = 0;
+  /** Over-grind events this job (for achievements / stats) */
+  private overgrindCount = 0
+  private hints!: Hints;
+  /** Grinding latched on (Settings → "Press to toggle") */
+  private grindLatched = false;
+  private rumbleTimer = 0;
+  private loadingTipTime = -1;
+  /** Defect kind of each section (see game/defects.ts) */
+  private sectionKinds: DefectKind[] = [];
+  /** Heading change across each section (+ = left), for curve wear */
+  private sectionTurn: number[] = [];
+  /** Damage multiplier from the route's condition (see game/meta.ts) */
+  private conditionFactor = 1;
+  /** Highest stone heat while grinding each section (for perfect passes) */
+  private sectionMaxHeat: number[] = [];
+  /** 3-star streak and its multiplier (see game/scoring.ts) */
+  private combo = new Combo();
+  /** Bonus pay earned this job (perfect passes, combos), paid at the end */
+  private jobBonus = 0;
+  private perfectCount = 0;
+  /** Stones went over OVERHEAT this stretch (so the combo only breaks once per overheat) */
+  private overheated = false;
+  private sweetSpotCooldown = 0;
+  private chatterCooldown = 0;
   private trackRestoredFt: number = 0;
   private overgrindCooldown: number = 0;
 
@@ -289,7 +421,9 @@ export class Game {
     const focus = this.grinderFocus();
     // Weather feeds the sky: clouds grey it out, snow whitens the ground
     this.dayNight.overcast = this.weather.overcast;
+    this.updateWorldFx(dt);
     this.dayNight.update(dt, this.engine.camera, focus);
+    this.updateScreenFx(dt);
     const dark = this.dayNight.darkness;
     this.updateWeatherShelter();
     this.consistLights.update(this.track, this.grinderPosition, dark, this.weather.haze);
@@ -302,7 +436,7 @@ export class Game {
     this._dustColor.setRGB(0.62, 0.56, 0.48).lerp(fog, 0.5).multiplyScalar(skyLight);
     const cam = this.engine.camera;
     this.grindEffects.setDustLook(this._dustColor,
-      this.engine.renderHeight / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)));
+      this.engine.renderHeight / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)), this.dayNight.darkness);
   }
 
   /** @param audioContext - made on the title click (a user gesture), if available */
@@ -341,6 +475,8 @@ export class Game {
       this.togglePause();
       this.startJobSelect();
     });
+    document.getElementById('pause-settings')!.addEventListener('click', () => this.settingsMenu.open('settings'));
+    document.getElementById('pause-help')!.addEventListener('click', () => this.settingsMenu.open('controls'));
 
     this.targetProfile = {
       name: 'AREMA 136RE Standard',
@@ -416,6 +552,37 @@ export class Game {
     // Inspection report, job selection, guided tutorial
     this.inspectionReport = new InspectionReport();
     this.jobSelect = new JobSelect();
+    this.settingsMenu = new SettingsMenu({
+      getQuality: () => this.quality,
+      cycleQuality: () => { this.quality = cycleQuality(this.quality); this.applyQuality(); this.engine.prewarm(false); },
+      getColorblind: () => isColorblindMode(),
+      toggleColorblind: () => { toggleColorblindMode(); },
+    });
+    // A settings button on the job menu too
+    this.jobSelect.onOpenSettings = () => this.settingsMenu.open('settings');
+    this.hints = new Hints();
+    this.engine.scene.add(this.fire.group, this.fire.sprayObject);
+    this.touch = new TouchControls(this.input);
+    this.photoMode.onSaved = () => this.checkPhotoChallenges();
+    this.input.setKeymap(getSettings().keymap);
+    onSettingsChange((s) => this.input.setKeymap(s.keymap));
+    this.jobSelect.onLiveryChange = () => {
+      const l = selectedLivery();
+      this.grinder?.setLivery(l.body, l.trim);
+    };
+    onSettingsChange((s) => {
+      if (this.audioReady) this.audio.setVolumes(s.masterVolume, s.effectsVolume, s.ambienceVolume);
+      this.camera.motionScale = s.reducedMotion ? 0.3 : 1;
+      this.engine.hitStopEnabled = !s.reducedMotion;
+      this.engine.timeScale = s.gameSpeed;
+      this.hints.enabled = s.hints;
+      this.profileRenderer.simple = this.profileRendererRight.simple = s.simpleProfile;
+      // Bigger HUD (text and panels) without touching every style
+      for (const id of ['top-bar', 'profile-container', 'track-map', 'combo-pill', 'control-hint', 'radio-dispatch', 'deadline-bar']) {
+        const el = document.getElementById(id);
+        if (el) (el.style as CSSStyleDeclaration & { zoom: string }).zoom = String(s.uiScale);
+      }
+    });
     this.guidedTutorial = new GuidedTutorial();
 
     // (No world is built yet: the job-select screen covers everything, and the
@@ -441,6 +608,8 @@ export class Game {
       if (!this.audioReady) {
         this.audio.init();
         this.audioReady = true;
+        const st = getSettings();
+        this.audio.setVolumes(st.masterVolume, st.effectsVolume, st.ambienceVolume);
         // Remove the other listener since only one fires first
         window.removeEventListener('keydown', initAudio);
         window.removeEventListener('click', initAudio);
@@ -459,53 +628,55 @@ export class Game {
    */
   private applyInitialDefects(job: JobDefinition): void {
     const totalVisual = this.track.segmentCount;
+    // Seeded: the same contract always has the same damage (fair for best
+    // scores); daily and random routes pass their own seed
+    const rand = seededRandom(job.seed ?? hashSeed(job.id));
+    // A well-kept route comes back in better shape; a neglected one worse
+    this.conditionFactor = job.id.startsWith('daily-') || job.id.startsWith('random-')
+      ? 1 : conditionSeverity(routeCondition(job.id));
+    this.sectionKinds = job.id === 'practice'
+      ? (['wear', 'corrugation', 'headCheck', 'gaugeFace', 'flatCrown'] as DefectKind[]).slice(0, this.sectionCount)
+      : chooseSectionKinds(this.sectionCount, job.region, rand, this.isFirstJob);
 
-    // Defect peak templates: { centerX, width (sigma), depth multiplier }
-    const peakTemplates = [
-      { name: 'gauge_corner', cx: -25, sigma: 6, base: 0.18 },
-      { name: 'gauge_shoulder', cx: -15, sigma: 5, base: 0.12 },
-      { name: 'crown_flat', cx: 0, sigma: 10, base: 0.08 },
-      { name: 'crown_bump', cx: 5, sigma: 4, base: 0.10 },
-      { name: 'field_transition', cx: 15, sigma: 5, base: 0.10 },
-      { name: 'field_lip', cx: 25, sigma: 6, base: 0.14 },
-    ];
-
-    // Use a seeded-ish random for reproducibility
-    let seed = 42;
-    const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    // Target profile for this route's class of track
+    this.trackClass = job.id === 'practice' || this.isFirstJob ? 'standard' : trackClassFor(job.region, job.seed ?? 0);
+    this.targetProfile.points = applyTemplate(this.baseTargetPoints, this.trackClass);
+    this.targetProfile.name = TRACK_CLASSES[this.trackClass].name;
+    // Long haul: a poor previous shift leaves more damage
+    if (job.id.startsWith('haul-')) this.conditionFactor = longHaulSeverity(loadLongHaul().stars);
+    if (job.modifiers?.includes('heavyDamage')) this.conditionFactor *= 1.3;
+    // How much each section turns (+ = left): curves wear the high and low rail differently
+    const sectionTurn: number[] = [];
+    for (let s = 0; s < this.sectionCount; s++) {
+      const a = this.track.getTrackPoint(this.track.sectionOffset + s * GAME_SECTION_LENGTH).forward;
+      const b = this.track.getTrackPoint(Math.min(this.track.totalLength - 0.1, this.track.sectionOffset + (s + 1) * GAME_SECTION_LENGTH)).forward;
+      let d = Math.atan2(b.x, b.z) - Math.atan2(a.x, a.z);
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      sectionTurn.push(-d); // heading grows turning right (+x), so negate for "+ = left"
+    }
+    this.sectionTurn = sectionTurn;
 
     for (let vi = 0; vi < totalVisual; vi++) {
       const viDist = vi * VISUAL_SEGMENT_LENGTH;
       const secIdx = this.track.getSectionIndex(viDist);
       // Skip lead-in and run-out track (outside the scored sections)
       if (secIdx < 0) continue;
-      const jobSeverity = job.defectSeverity;
+      const jobSeverity = job.defectSeverity * this.conditionFactor;
       // First 2 sections are trivially easy for onboarding
       const easyMult = (this.isFirstJob && secIdx < 2) ? 0.15 : 1.0;
       // Severity ramps up along the route. DEFECT_SCALE sets overall difficulty:
       // tuned so even the Easy job starts below the RQI 80 target.
       const DEFECT_SCALE = 1.4;
       const difficulty = (0.6 + (secIdx / this.sectionCount) * 0.4) * jobSeverity * DEFECT_SCALE * easyMult;
+      const kind = this.sectionKinds[secIdx];
 
-      // Pick DIFFERENT defect peaks for each rail independently
       for (const rail of ['left', 'right'] as const) {
-        const numPeaks = 2 + Math.floor(rand() * 3);
-        const shuffled = [...peakTemplates].sort(() => rand() - 0.5);
-        const railPeaks = shuffled.slice(0, numPeaks);
-
-        // On curves, inner rail gets more gauge-side wear, outer gets field-side
-        for (let pi = 0; pi < railPeaks.length; pi++) {
-          const pk = railPeaks[pi];
-          if (rail === 'left' && pk.cx < 0) {
-            railPeaks[pi] = { ...pk, base: pk.base * (1.0 + rand() * 0.5) };
-          } else if (rail === 'right' && pk.cx > 0) {
-            railPeaks[pi] = { ...pk, base: pk.base * (1.0 + rand() * 0.5) };
-          }
-        }
-
+        // Same kind on both rails, but each 5 m stretch of each rail varies a little
+        const peaks = [...defectPeaks(kind, rand), ...(this.isFirstJob ? [] : curvePeaks(sectionTurn[secIdx] ?? 0, rail))];
         const profile = this.track.getProfile(vi, rail);
         for (const point of profile.points) {
-          for (const peak of railPeaks) {
+          for (const peak of peaks) {
             const dx = point.x - peak.cx;
             const defect = peak.base * difficulty * Math.exp(-(dx * dx) / (2 * peak.sigma * peak.sigma));
             const variation = 0.7 + rand() * 0.6;
@@ -561,7 +732,71 @@ export class Game {
         defectSeverity: Math.min(1, sectionWorstDeviation(this.track, this.targetProfile, sec) * 10),
         accuracy: sectionAccuracy(this.track, this.targetProfile, sec),
         slowOrder: this.segmentSlowOrder[sec],
+        kindCode: this.sectionKinds[sec] ? DEFECT_KINDS[this.sectionKinds[sec]].short : undefined,
       });
+    }
+    this.trackMap.describe = (i) => this.describeSection(i);
+  }
+
+  /** Track map hover: what this section needs */
+  private describeSection(i: number): string {
+    if (i < 0 || i >= this.sectionCount) return '';
+    const kind = this.sectionKinds[i];
+    const info = kind ? DEFECT_KINDS[kind] : null;
+    if (this.segmentCompleted[i]) return `<b style="color:#7dff8a">SECTION ${i + 1} · DONE</b>`;
+    const acc = Math.round(sectionAccuracy(this.track, this.targetProfile, i) * 100);
+    const passes = this.estimatePasses(i);
+    return `<b style="color:#ffcc55">SECTION ${i + 1} · ${info ? info.name : ''}</b><br>`
+      + `${info ? info.tip + '<br>' : ''}`
+      + `Accuracy ${acc}% · est. ${passes} pass${passes === 1 ? '' : 'es'}`
+      + (this.segmentSlowOrder[i] ? '<br><span style="color:#ffcc00">Slow order: 10 mph until fixed</span>' : '');
+  }
+
+  /**
+   * Roughly how many grinding passes a section needs: its deepest excess metal
+   * divided by what one pass at 50% pressure takes off a point (the grinder
+   * spends ~2.5 s over each 5 m stretch at grinding speed).
+   */
+  private estimatePasses(sec: number): number {
+    const excess = sectionWorstDeviation(this.track, this.targetProfile, sec) - this.targetProfile.tolerance;
+    const perPass = removalRatePerSec(50) * this.upgrades.removal * (5 / GRIND_SPEED);
+    return Math.max(1, Math.ceil(excess / perPass));
+  }
+
+  /** Route name + a tip while a job loads (shaders compiling); fades after */
+  private showLoadingTip(job: JobDefinition): void {
+    const tips = [
+      'Listen for the bright <i>tink</i>: your stone is right on the worst spot.',
+      'Between 60% and 80% heat the stones cut faster. Past 80% they glaze — and your combo is gone.',
+      'Corrugation chatters under heavy pressure. Go light and wide.',
+      'Head checks are deep and narrow: aim at the gauge corner and lean on it.',
+      'Gauge-face wear sits on the very edge: tilt the stone all the way.',
+      'Finish a section in one clean pass for a PERFECT PASS bonus.',
+      'Three-star sections in a row build a combo that multiplies your bonus pay.',
+      'Hover a section on the track map to see what it needs.',
+      'Press V for the simple profile display, H for settings and help.',
+      'Coarse stones cut fast but cost finish bonus; fine stones pay more for patience.',
+      'On a curve the outer rail wears on its gauge face and the inner rail on its crown.',
+      'Untouched sections keep wearing as traffic runs — do not leave the worst for last.',
+    ];
+    const route = document.getElementById('loading-route');
+    const text = document.getElementById('loading-text');
+    const box = document.getElementById('loading-tip');
+    if (!route || !text || !box) return;
+    route.textContent = job.name.toUpperCase();
+    text.innerHTML = tips[Math.floor(Math.random() * tips.length)];
+    box.style.opacity = '1';
+    this.loadingTipTime = 0;
+  }
+
+  private updateLoadingTip(dt: number): void {
+    if (this.loadingTipTime < 0) return;
+    this.loadingTipTime += dt;
+    // Keep it up while shaders compile, and at least ~2.5 s so it can be read
+    if (this.loadingTipTime > 2.5 && !this.engine.isCompiling) {
+      const box = document.getElementById('loading-tip');
+      if (box) box.style.opacity = '0';
+      this.loadingTipTime = -1;
     }
   }
 
@@ -581,6 +816,7 @@ export class Game {
     this.ground.rotation.x = -Math.PI / 2;
     this.ground.position.set(30, -0.6, 170); // centered on the track midpoint
     this.ground.receiveShadow = true;
+    this.cloudShadows = applyCloudShadows(groundMat);
     this.engine.scene.add(this.ground);
   }
 
@@ -588,15 +824,83 @@ export class Game {
 
   // ---- MAIN UPDATE LOOP ----
 
+  /** Feed the hint system what's going on right now */
+  private updateHints(dt: number): void {
+    const sec = this.track.getSectionIndex(this.grinderPosition);
+    const needsWork = sec >= 0 && !this.segmentCompleted[sec];
+    let offTarget = false, corrugationHeavy = false;
+    if (needsWork) {
+      const vi = this.track.getSegmentIndex(this.grinderPosition);
+      for (const rail of RAILS) {
+        const worst = this.worstZonesFor(this.track.getProfile(vi, rail))[0];
+        if (worst && worst.severity > this.targetProfile.tolerance
+            && Math.abs(worst.centerX - stoneGrindX(this.stoneAngle[rail])) > 5) offTarget = true;
+        if (this.sectionKinds[sec] === 'corrugation' && this.stonePressure[rail] > CHATTER_PRESSURE) corrugationHeavy = true;
+      }
+    }
+    // Long stretch of finished (or no) track before the next job: SHIFT helps
+    let fastTravelUseful = false;
+    if (!needsWork) {
+      const next = this.segmentCompleted.findIndex((d, i) => !d && i > sec);
+      const nextDist = next >= 0 ? this.track.sectionOffset + next * GAME_SECTION_LENGTH : Infinity;
+      fastTravelUseful = nextDist - this.grinderPosition > 60 && next >= 0;
+    }
+    // One message at a time: control hints stay quiet while a job event or card is showing
+    this.hints.update(dt, {
+      playing: !this.eventText && this.cardBusyUntil < performance.now(), grinding: this.isGrinding, speed: this.grinderSpeed, heat: this.stoneHeat,
+      offTarget, needsWork, corrugationHeavy, fastTravelUseful,
+    }, this.input.lastDevice);
+  }
+
   private togglePause(): void {
+    this.hints.hideNow();
     if (!this.gameStarted || this.jobComplete || this.inspectionPass) return;
     this.isPaused = !this.isPaused;
     this.pauseMenu.style.display = this.isPaused ? 'flex' : 'none';
+    if (this.isPaused) this.fillPauseStats();
+  }
+
+  /** The visual segment in the middle of a section */
+  private middleSegmentOf(section: number): number {
+    const d = this.track.sectionOffset + (section + 0.5) * GAME_SECTION_LENGTH;
+    return Math.min(this.track.segmentCount - 1, Math.floor(d / VISUAL_SEGMENT_LENGTH));
+  }
+
+  /** Pause menu: how the job is going */
+  private fillPauseStats(): void {
+    const el = document.getElementById('pause-stats');
+    if (!el) return;
+    const done = this.completedCount;
+    const stars = this.segmentStars.reduce((a, b) => a + (b || 0), 0);
+    const est = jobGrade(Math.max(1, Math.round((stars / Math.max(1, done)) * 5 / 3)), this.perfectCount, this.combo.best, this.sectionCount);
+    const mins = Math.floor(this.playTime / 60), secs = Math.floor(this.playTime % 60).toString().padStart(2, '0');
+    const cell = (k: string, v: string) => `<div><div style="font-size:9px; letter-spacing:2px; color: var(--ui-dim);">${k}</div><div style="font-size:16px; font-weight:700;">${v}</div></div>`;
+    el.innerHTML = [
+      cell('SECTIONS', `${done} / ${this.sectionCount}`),
+      cell('TIME', `${mins}:${secs}`),
+      cell('COMBO', `${this.combo.count} (best ${this.combo.best})`),
+      cell('BONUS SO FAR', `$${this.jobBonus.toLocaleString()}`),
+      cell('PERFECT PASSES', String(this.perfectCount)),
+      cell('GRADE SO FAR', done ? est : '—'),
+    ].join('');
   }
 
   private update(dt: number): void {
     // Settings toggles work everywhere, including menus
+    this.input.pollGamepad();
+    this.touch?.setVisible(this.gameStarted && !this.jobComplete && !this.inspectionPass && !this.isPaused);
     this.perfOverlay.update(this.engine.renderer.info.render);
+    // Settings menu (H — O is the right stone's angle key); while it's open the game is paused
+    if (this.settingsMenu.isOpen) { this.input.endFrame(); return; }
+    if (this.input.wasKeyPressed('h')) {
+      const wasPlaying = this.gameStarted && !this.isPaused && !this.jobComplete && !this.inspectionPass;
+      if (wasPlaying) this.togglePause();
+      this.settingsMenu.open('settings', () => { if (wasPlaying && this.isPaused) this.togglePause(); });
+      this.input.endFrame();
+      return;
+    }
+    if (this.input.wasKeyPressed('v')) updateSettings({ simpleProfile: !getSettings().simpleProfile });
+    this.updateLoadingTip(dt);
     if (this.input.wasKeyPressed('`')) this.perfOverlay.toggle();
     if (this.input.wasKeyPressed('g')) {
       this.quality = cycleQuality(this.quality);
@@ -693,7 +997,8 @@ export class Game {
 
     // Update audio
     if (this.audioReady) {
-      this.audio.setDieselSpeed(this.grinderSpeed);
+      this.audio.setDieselSpeed(this.grinderSpeed,
+        this.isGrinding ? (this.stonePressure.left + this.stonePressure.right) / 200 : 0);
       // Rail condition affects wheel sound — completed sections are smooth
       const sec = this.track.getSectionIndex(this.grinderPosition);
       const railCondition = (sec >= 0 && sec < this.segmentCompleted.length && this.segmentCompleted[sec]) ? 1.0 : 0.0;
@@ -706,6 +1011,7 @@ export class Game {
 
     // Passing trains
     this.passingTrain.update(dt, this.grinderPosition, this.dayNight.darkness);
+    this.updateJobEvents(dt);
 
     // Radio dispatch
     this.radioDispatch.update(dt);
@@ -727,13 +1033,18 @@ export class Game {
       }
     }
     this.trackMap.setNextTarget(nextTarget);
+    // Ghost: record this run, and show where your best run was at this moment
+    const runT = (this.grinderPosition - secOffset) / (secEnd - secOffset);
+    this.ghostTimer += dt;
+    if (this.ghostTimer >= GHOST_STEP) { this.ghostTimer -= GHOST_STEP; this.ghostSamples.push(Math.max(0, Math.min(1, runT))); }
+    if (this.ghost) this.trackMap.setGhostPosition(ghostAt(this.ghost, this.playTime));
     this.trackMap.draw();
 
     // Boost exposure when grinding in the dark for spark drama (eased in DayNightCycle)
     this.dayNight.grindBoost = this.isGrinding ? 1 : 0;
 
     // Revenue train deadline (paused during the guided tutorial)
-    if (!this.guidedTutorial.active) {
+    if (!this.guidedTutorial.active && this.currentJob?.id !== 'practice') {
       const grinderT = (this.grinderPosition - secOffset) / (secEnd - secOffset);
       this.deadline.update(dt, this.completedCount, grinderT);
     }
@@ -755,6 +1066,7 @@ export class Game {
       this.audio.muted = !this.audio.muted;
     }
 
+    this.updateHints(dt);
     this.checkJobComplete();
     this.updateHUD();
     this.input.endFrame();
@@ -794,10 +1106,10 @@ export class Game {
     // While not grinding, player drives normally
     if (!this.isGrinding) {
       // SHIFT = fast-travel (3x speed) when not grinding
-      const fastTravel = this.input.isKeyDown('shift');
+      const fastTravel = this.input.isKeyDown('shift') && !this.mods.includes('noFastTravel');
       const speedMult = fastTravel ? 3.0 : 1.0;
       // Fast travel raises the top speed, but never the slow-order limit
-      const maxSpeed = Math.min(10 * speedMult, slowOrderLimit);
+      const maxSpeed = Math.min(10 * speedMult * this.machine.driveSpeed, slowOrderLimit);
       const accel = 5 * speedMult, friction = 3;
 
       if (this.input.isKeyDown('w') || this.input.isKeyDown('arrowup')) {
@@ -816,6 +1128,8 @@ export class Game {
       }
     }
 
+    // Held for the welders at a broken rail: no moving until it's fixed
+    if (this.weldTimer >= 0) this.grinderSpeed = 0;
     this.grinderPosition += this.grinderSpeed * dt;
     // Clamp so entire consist stays on track (crew car at offset +67 is the longest)
     const maxPos = this.trackLength - 75;
@@ -899,6 +1213,12 @@ export class Game {
     if (this.input.wasKeyPressed('3')) { this.camera.angle = 'cab';}
     if (this.input.wasKeyPressed('4')) { this.camera.angle = 'overview';}
     if (this.input.wasKeyPressed('5')) { this.camera.angle = 'grind';}
+    if (this.input.wasKeyPressed('6')) { this.camera.angle = 'director';}
+    // Gamepad (Y): cycle through the camera views
+    if (this.input.wasKeyPressed('camnext')) {
+      const views = ['chase', 'side', 'cab', 'overview', 'grind', 'director'] as const;
+      this.camera.angle = views[(views.indexOf(this.camera.angle) + 1) % views.length];
+    }
   }
 
   /**
@@ -910,14 +1230,36 @@ export class Game {
     const sectionIndex = this.track.getSectionIndex(this.grinderPosition);
     const visualSegIndex = this.track.getSegmentIndex(this.grinderPosition);
 
-    this.isGrinding = this.input.isKeyDown(' ');
+    if (getSettings().grindMode === 'toggle') {
+      if (this.input.wasKeyPressed(' ')) this.grindLatched = !this.grindLatched;
+      this.isGrinding = this.grindLatched;
+    } else {
+      this.isGrinding = this.input.isKeyDown(' ');
+    }
+    // Controller: a steady buzz while the stones are down
+    if (this.isGrinding && getSettings().rumble) {
+      this.rumbleTimer -= dt;
+      if (this.rumbleTimer <= 0) {
+        this.rumbleTimer = 0.2;
+        const p = (this.stonePressure.left + this.stonePressure.right) / 200;
+        this.input.rumble(0.08 + p * 0.2, 0.15 + p * 0.25, 240);
+      }
+    }
     const avgPressure = (this.stonePressure.left + this.stonePressure.right) / 2;
 
     // Heat: builds with pressure while grinding (cooling upgrade slows it), cools while lifted
     const heatRate = heatRatePerSec(avgPressure);
-    const heatChange = this.isGrinding ? (heatRate > 0 ? heatRate * this.upgrades.heat : heatRate) : -COOL_RATE;
+    const heatChange = this.isGrinding ? (heatRate > 0 ? heatRate * this.upgrades.heat * STONE_GRADES[this.stoneGrade].heat * this.machine.heat : heatRate) : -COOL_RATE;
     this.stoneHeat = Math.max(0, Math.min(100, this.stoneHeat + heatChange * dt));
     this.overheatWarning = this.stoneHeat > 80;
+    this.sweetSpotCooldown = Math.max(0, this.sweetSpotCooldown - dt);
+    this.chatterCooldown = Math.max(0, this.chatterCooldown - dt);
+    if (this.stoneHeat >= OVERHEAT && !this.overheated) {
+      this.overheated = true;
+      this.loseCombo('OVERHEATED');
+    } else if (this.stoneHeat < OVERHEAT - 10) {
+      this.overheated = false;
+    }
     this.overgrindCooldown = Math.max(0, this.overgrindCooldown - dt);
 
     // Always show where each stone is aimed on the profile displays
@@ -929,8 +1271,16 @@ export class Game {
     }
 
     // Sparks, work lights, contact glow
+    this.grindEffects.stoneHeat = this.stoneHeat / 100;
     this.grindEffects.setState(this.track, this.grinderPosition, this.isGrinding, avgPressure);
     this.grinder.setGrinding(this.isGrinding);
+    if (this.isGrinding && !this.wasGrinding) {
+      this.grindEffects.stoneImpact();
+      this.camera.shake(0.08);
+      if (this.audioReady) this.audio.playStoneDrop();
+      if (getSettings().rumble) this.input.rumble(0.6, 0.3, 120);
+    }
+    this.wasGrinding = this.isGrinding;
 
     if (!this.isGrinding) {
       this.audio.stopGrinding();
@@ -939,24 +1289,51 @@ export class Game {
 
     // AUTO-SPEED: while grinding, the grinder creeps forward on its own;
     // the player focuses on angle and pressure
-    this.grinderSpeed = GRIND_SPEED;
+    // W / S set the grinding speed: slower takes more metal off per pass, but costs time
+    if (this.input.isKeyDown('w')) this.grindSpeedSetting = Math.min(3, this.grindSpeedSetting + 1.2 * dt);
+    if (this.input.isKeyDown('s')) this.grindSpeedSetting = Math.max(1, this.grindSpeedSetting - 1.2 * dt);
+    this.grinderSpeed = this.grindSpeedSetting;
 
     // Remove metal from both rails with their individual settings
     const penalty = heatPenalty(this.stoneHeat);
-    const tol = this.targetProfile.tolerance;
+    const tol = this.targetProfile.tolerance * this.weatherMods.tolerance;
     let onDefect = 0;          // for the audio: how much excess metal is under the stones
     let overgrinding = false;
     for (const rail of RAILS) {
       const grindX = stoneGrindX(this.stoneAngle[rail]);
-      const depth = removalRatePerSec(this.stonePressure[rail]) * this.upgrades.removal * penalty * dt;
+      let depth = removalRatePerSec(this.stonePressure[rail]) * this.upgrades.removal * penalty * dt
+        * STONE_GRADES[this.stoneGrade].removal * this.weatherMods.removal;
       const profile = this.track.getProfile(visualSegIndex, rail);
+      // Corrugation punishes heavy pressure: the stone chatters and skips
+      if (sectionIndex >= 0 && this.sectionKinds[sectionIndex] === 'corrugation'
+          && this.stonePressure[rail] > CHATTER_PRESSURE) {
+        depth *= CHATTER_FACTOR;
+        if (this.chatterCooldown <= 0) {
+          this.chatterCooldown = 2.5;
+          this.floatingScore.show('CHATTER — EASE OFF PRESSURE', '#ffcc44',
+            window.innerWidth / 2, window.innerHeight / 2 + 60);
+        }
+      }
+      // Sweet spot: the stone is centred on this rail's worst hump
+      const worst = this.worstZonesFor(profile)[0];
+      if (worst && worst.severity > 0 && Math.abs(worst.centerX - grindX) < 2.5 && this.sweetSpotCooldown <= 0) {
+        this.sweetSpotCooldown = 0.9;
+        if (this.audioReady) this.audio.playSweetSpot();
+      }
 
       // Before cutting: is this stone on a defect? (0 = clean rail, 1 = deep defect)
       const excess = profile.getDeviationAtX(grindX, this.targetProfile) - tol;
       onDefect += Math.max(0, Math.min(1, excess / 0.08)) / RAILS.length;
 
+      // Worn stones cut less (see stone life)
+      depth *= this.stoneLife > 30 ? 1 : this.stoneLife > 10 ? 0.7 : 0.4;
+      // First job, opening sections: a safety net — the stone can't cut past the target
+      if (this.isFirstJob && sectionIndex >= 0 && sectionIndex < 2
+          && profile.getDeviationAtX(grindX, this.targetProfile) < tol * 1.2) depth = 0;
       profile.removeMetalAt(grindX, stoneContactWidth(this.stonePressure[rail]) * this.upgrades.width, depth);
       this.totalMetalRemoved += depth;
+      // The stones wear as they cut (the hard-cut compound wears slower)
+      if (this.features.wearAndHold) this.stoneLife = Math.max(0, this.stoneLife - depth * 55 / this.upgrades.removal * (this.crew.mechanic ? 0.7 : 1));
 
       // Over-grind: went past the target line at the stone centre
       const isOver = profile.getDeviationAtX(grindX, this.targetProfile) < -tol;
@@ -969,7 +1346,13 @@ export class Game {
         }
         this.rendererFor(rail).flashBorder();
         this.camera.shake(0.06);
-        if (this.audioReady) this.audio.playOvergrindAlarm();
+        this.flashVignette();
+        if (getSettings().rumble) this.input.rumble(0.9, 0.6, 260);
+        if (this.audioReady) { this.audio.playOvergrindAlarm(); this.audio.playScreech(); }
+        this.loseCombo('OVER-GRIND');
+        this.overgrindCount++;
+        this.showFailureTip(rail, grindX, profile);
+        if (sectionIndex >= 0 && !this.practiced.has(sectionIndex)) this.retryOffer = { sec: sectionIndex, until: this.playTime + 8 };
       }
     }
 
@@ -1002,7 +1385,9 @@ export class Game {
 
     // Section scoring only applies inside the scored sections (not lead-in / run-out)
     if (sectionIndex >= 0) {
+      this.sectionMaxHeat[sectionIndex] = Math.max(this.sectionMaxHeat[sectionIndex] || 0, this.stoneHeat);
       const accuracy = sectionAccuracy(this.track, this.targetProfile, sectionIndex);
+      if (this.audioReady) this.audio.accuracyLift = Math.max(0, Math.min(1, (accuracy - 0.4) / 0.5));
       const progress = sectionProgress(
         this.initialSectionAccuracy[sectionIndex] ?? 0,
         sectionMeanAccuracy(this.track, this.targetProfile, sectionIndex),
@@ -1028,6 +1413,8 @@ export class Game {
 
     this.camera.setShake(0.01 + (avgPressure / 100) * 0.02);
     if (this.audioReady) this.audio.startGrinding(avgPressure / 80, onDefect, overgrinding);
+    // Spark colour for next frame: blue-white over-grinding, dull red off the hump
+    this.grindEffects.sparkMode = overgrinding ? 'over' : onDefect > 0.15 || sectionIndex < 0 ? 'good' : 'off';
     eventBus.emit('grind-contact', { sectionIndex });
   }
 
@@ -1058,11 +1445,573 @@ export class Game {
       const renderer = this.rendererFor(rail);
       renderer.setWorstZones(this.worstZonesFor(profile));
       renderer.setSegmentInfo(dmg, passes);
+      if (rail === 'left') this.showDefectHint(sectionIndex);
       renderer.draw(profile, this.targetProfile);
     }
   }
 
+  /** One line above the profile panels: the kind of damage here and how to grind it */
+  private showDefectHint(sectionIndex: number): void {
+    const kind = sectionIndex >= 0 && !this.segmentCompleted[sectionIndex] ? this.sectionKinds[sectionIndex] : undefined;
+    const key = kind ?? '';
+    if (key === this.defectHintKey) return;
+    this.defectHintKey = key;
+    const name = document.getElementById('defect-name');
+    const tip = document.getElementById('defect-tip');
+    if (!name || !tip) return;
+    name.textContent = kind ? DEFECT_KINDS[kind].name : '';
+    tip.textContent = kind ? '— ' + DEFECT_KINDS[kind].tip : '';
+  }
+  private defectHintKey = '-';
+
+  // ---------------------------------------------------------------------------
+  // Job events: work crews, broken rail, fires, stone wear, the revenue-train
+  // hold, new-damage cards, failure tips (see the Batch D notes in src/README.md)
+  // ---------------------------------------------------------------------------
+
+  /** Set up this job's crews / broken rail and reset per-job event state */
+  private buildJobEvents(job: JobDefinition): void {
+    const rand = seededRandom((job.seed ?? hashSeed(job.id)) ^ 0x5eed);
+    const practice = job.id === 'practice';
+    this.features = practice ? { fires: false, wearAndHold: true, crews: false } : featuresFor(loadStats().jobs);
+    const crewDists: number[] = [];
+    if (this.features.crews) {
+      const n = 1 + Math.floor(rand() * 2);
+      for (let i = 0; i < n; i++) {
+        const sec = 2 + Math.floor(rand() * Math.max(1, this.sectionCount - 3));
+        crewDists.push(this.track.sectionOffset + sec * GAME_SECTION_LENGTH + 10);
+      }
+    }
+    const broken = this.features.crews && rand() < 0.35
+      ? this.track.sectionOffset + Math.floor(this.sectionCount * (0.35 + rand() * 0.4)) * GAME_SECTION_LENGTH + 12
+      : null;
+    this.crews = new TrackCrews(this.track, crewDists, broken);
+    this.engine.scene.add(this.crews.group);
+    this.wildlife = new Wildlife(this.track, this.track.sectionOffset);
+    this.engine.scene.add(this.wildlife.group);
+    this.atmos = new Atmos(this.track, job.region);
+    this.engine.scene.add(this.atmos.group);
+    this.fire.reset();
+    this.fireBurnTime = 0;
+    this.fireFined = false;
+    this.stoneLife = 100;
+    this.stoneChange = 0;
+    this.grindSpeedSetting = GRIND_SPEED;
+    this.weldTimer = -1;
+    this.holdsUsed = 0;
+    this.regrowTimer = 0;
+    this.regrowNoticeShown = false;
+    this.weatherNoticeShown = false;
+    this.emergency = null;
+    this.emergencyTimer = 80 + rand() * 60;
+    this.emergenciesLeft = 2;
+    this.sectionPar = [];
+    for (let s = 0; s < this.sectionCount; s++) this.sectionPar.push(this.estimatePasses(s));
+    this.profilesBefore = [];
+    this.segmentStars = [];
+    // Modifiers, rank perks, depot (machine + crew)
+    this.mods = job.modifiers ?? [];
+    this.perks = rankPerks(rankFor(totalBestStars(loadRecords())).index);
+    const depot = loadDepot();
+    this.machine = MACHINES[depot.active];
+    this.crew = {
+      firewatch: depot.crew.includes('firewatch'), welder: depot.crew.includes('welder'),
+      mechanic: depot.crew.includes('mechanic'), spotter: depot.crew.includes('spotter'),
+    };
+    if (this.mods.includes('wornStones')) this.stoneLife = 40;
+    this.deadline.pace = this.mods.includes('traffic') ? 0.6 : 1;
+    this.retryOffer = null;
+    this.practiced.clear();
+    this.resultFrame = null;
+    this.captureRequested = false;
+    this.startProfiles = [];
+    for (let vi = 0; vi < this.track.segmentCount; vi++) {
+      this.startProfiles.push({
+        left: this.track.getProfile(vi, 'left').points.map((p) => ({ x: p.x, y: p.y })),
+        right: this.track.getProfile(vi, 'right').points.map((p) => ({ x: p.x, y: p.y })),
+      });
+    }
+    // Collectible: something old glinting beside the rail (museum)
+    this.collectible = null;
+    const cf = practice || this.isFirstJob ? null : collectibleFor(job.seed ?? hashSeed(job.id), this.sectionCount, loadMuseum());
+    if (cf && this.crews) {
+      const dist = this.track.sectionOffset + (cf.section + 0.5) * GAME_SECTION_LENGTH;
+      const tp = this.track.getTrackPoint(dist);
+      const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.09),
+        new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffe08a).multiplyScalar(2.5) }));
+      mesh.position.copy(tp.position).addScaledVector(tp.right, -1.55);
+      mesh.position.y = -0.3;
+      this.crews.group.add(mesh); // disposed with the crews
+      this.collectible = { id: cf.id, dist, mesh, found: false };
+    }
+    const goal = document.getElementById('goal-line');
+    if (goal) { const g = currentGoal(); goal.textContent = g ? `NEXT: ${g}` : ''; goal.style.display = g ? 'block' : 'none'; }
+    for (let s = 0; s < this.sectionCount; s++) {
+      this.profilesBefore.push(this.track.getProfile(this.middleSegmentOf(s), 'left').points.map((p) => ({ x: p.x, y: p.y })));
+    }
+  }
+
+  /** Every frame of play: run the job's events and show the most urgent one */
+  private updateJobEvents(dt: number): void {
+    const pos = this.grinderPosition;
+    const consistFrom = pos - 50, consistTo = pos + 76;
+    let event = '';
+
+    this.wildlife?.update(dt, consistTo, consistFrom, this.dayNight.darkness > 0.6);
+
+    // ---- Work crews: pass them slowly ----
+    if (this.crews) {
+      this.crews.update(dt, consistFrom, consistTo);
+      for (const c of this.crews.crews) {
+        const inZone = consistTo > c.dist - WORK_ZONE_HALF && consistFrom < c.dist + WORK_ZONE_HALF;
+        const approaching = consistTo > c.dist - 70 && consistTo < c.dist - WORK_ZONE_HALF;
+        if (inZone || approaching) event = `👷 WORK CREW — keep it under ${Math.round(WORK_ZONE_SPEED * 2.237)} mph`;
+        if (inZone && Math.abs(this.grinderSpeed) > WORK_ZONE_SPEED && !c.violated) {
+          c.violated = true;
+          this.jobBonus -= EVENT_PAY.safetyFine;
+          this.loseCombo('SAFETY VIOLATION');
+          this.floatingScore.show(`SAFETY VIOLATION  −$${EVENT_PAY.safetyFine}`, '#ff5544', window.innerWidth / 2, window.innerHeight / 2 - 60);
+          if (this.audioReady) this.audio.playOvergrindAlarm();
+        }
+      }
+      // ---- Broken rail: stop short and wait for the welders ----
+      const br = this.crews.brokenRail;
+      if (br && !br.fixed) {
+        const ahead = br.dist - consistTo;
+        if (this.weldTimer >= 0) {
+          this.weldTimer -= dt;
+          this.grinderSpeed = 0;
+          event = `🔧 WELDING THE BROKEN RAIL… ${Math.ceil(this.weldTimer)} s`;
+          this.weldSparkTimer -= dt;
+          if (this.weldSparkTimer <= 0) {
+            this.weldSparkTimer = 0.15;
+            const tp = this.track.getTrackPoint(br.dist);
+            this.grindEffects.weldSparks(tp.position.clone().addScaledVector(tp.right, -0.8));
+          }
+          if (this.weldTimer <= 0) {
+            this.crews.fixBrokenRail();
+            this.weldTimer = -1;
+            this.floatingScore.show('RAIL WELDED — PROCEED', '#7dff8a');
+          }
+        } else if (ahead < 0) {
+          // Ran over it: emergency stop, fine, and it still has to be welded
+          this.grinderSpeed = 0;
+          this.jobBonus -= EVENT_PAY.brokenRailFine;
+          this.loseCombo('BROKEN RAIL');
+          this.floatingScore.show(`RAN A BROKEN RAIL  −$${EVENT_PAY.brokenRailFine}`, '#ff5544');
+          this.camera.shake(0.3);
+          this.weldTimer = this.crew.welder ? 4 : 8;
+        } else if (ahead < 70) {
+          event = '⚠ BROKEN RAIL AHEAD — STOP';
+          if (Math.abs(this.grinderSpeed) < 0.15 && ahead < 45) this.weldTimer = this.crew.welder ? 3.5 : 7;
+        }
+      }
+    }
+
+    // ---- Fire: hot stones on a dry day can set the grass alight ----
+    const dry = !this.weather.isRaining && !this.weather.isSnowing && this.weather.snowCover < 0.5
+      && this.features.fires;
+    if (!this.fire.active && dry && this.isGrinding && this.stoneHeat > 60) {
+      const chance = 0.004 + (this.stoneHeat - 60) * 0.0009; // per second
+      if (Math.random() < chance * dt) {
+        const d = Math.max(5, pos - 60);
+        const tp = this.track.getTrackPoint(d);
+        this.fire.ignite(tp.position.clone().addScaledVector(tp.right, -4.6).setY(-0.6), d);
+        this.fireBurnTime = 0;
+        this.fireFined = false;
+        this.floatingScore.show('🔥 SPARKS STARTED A FIRE!', '#ff8844');
+      }
+    }
+    const spraying = this.input.isKeyDown('x');
+    let reach = false;
+    if (this.fire.active) {
+      // The nearer water car does the spraying
+      const cars = [pos - 26, pos + 38];
+      const car = cars.reduce((a, b) => (Math.abs(b - this.fire.dist) < Math.abs(a - this.fire.dist) ? b : a));
+      reach = Math.abs(car - this.fire.dist) < 18 && Math.abs(this.grinderSpeed) < 1;
+      const tp = this.track.getTrackPoint(Math.max(0.1, Math.min(this.track.totalLength - 0.1, car)));
+      this.fire.setSpraying(spraying && reach, tp.position.clone().addScaledVector(tp.right, -1.6).setY(tp.position.y + 3.4));
+      this.fireBurnTime += dt;
+      if (this.fireBurnTime > (this.crew.firewatch ? 40 : 25) && !this.fireFined) {
+        this.fireFined = true;
+        this.jobBonus -= EVENT_PAY.fireFine;
+        this.loseCombo('FIRE SPREAD');
+        this.floatingScore.show(`FIRE SPREAD  −$${EVENT_PAY.fireFine} FINE`, '#ff5544');
+      }
+      event = reach ? (spraying ? '💧 SPRAYING…' : '🔥 FIRE — hold X to spray it')
+        : '🔥 FIRE BEHIND — stop beside it and hold X to spray';
+    } else {
+      this.fire.setSpraying(false);
+    }
+    const grow = (this.currentJob?.region === 'prairie' ? 0.045 : 0.03) * (this.crew.firewatch ? 0.5 : 1);
+    if (this.fire.update(dt, grow, reach) === 'out') {
+      // Close call: put out just before it would have spread
+      if (!this.fireFined && this.fireBurnTime > (this.crew.firewatch ? 32 : 18)) {
+        this.jobBonus += EVENT_PAY.fireCloseCall; this.floatingScore.show(`CLOSE CALL! FIRE OUT  +$${EVENT_PAY.fireCloseCall}`, '#7dff8a');
+      } else if (!this.fireFined) { this.jobBonus += EVENT_PAY.fireOut; this.floatingScore.show(`FIRE OUT  +$${EVENT_PAY.fireOut}`, '#8ad0ff'); }
+      else this.floatingScore.show('FIRE OUT', '#8ad0ff');
+    }
+
+    // ---- Stone wear: stop and hold Z to put new stones on ----
+    if (this.stoneLife < 100 && Math.abs(this.grinderSpeed) < 0.15 && !this.isGrinding && this.input.isKeyDown('z')) {
+      this.stoneChange += dt;
+      const changeTime = 2.5 * this.perks.stoneChange;
+      event = `🔩 CHANGING STONES… ${Math.min(100, Math.round(this.stoneChange / changeTime * 100))}%`;
+      if (this.stoneChange >= changeTime) {
+        this.stoneLife = 100;
+        this.stoneChange = 0;
+        this.floatingScore.show('NEW STONES FITTED', '#7dff8a');
+      }
+    } else {
+      this.stoneChange = 0;
+      if (!event && this.stoneLife <= 30) event = `🔩 STONES WORN (${Math.round(this.stoneLife)}%) — stop and hold Z to change`;
+    }
+    const lifeEl = document.getElementById('stone-life');
+    if (lifeEl) {
+      this.setText(lifeEl, `STONE ${Math.round(this.stoneLife)}%`);
+      this.setStyle(lifeEl, 'color', this.stoneLife > 30 ? 'var(--ui-dim)' : this.stoneLife > 10 ? 'var(--ui-accent)' : 'var(--ui-red)');
+    }
+
+    // ---- Revenue train: ask for a hold (T) ----
+    const left = this.deadline.secondsLeft;
+    if (left !== null && left < 45 && !event && this.features.wearAndHold) event = `🚆 Train close — press T to ask for a 60 s hold ($${Math.round(EVENT_PAY.trainHold * this.perks.holdCost)})`;
+    if (this.input.wasKeyPressed('t') && this.features.wearAndHold && this.deadline.requestHold(60)) {
+      this.holdsUsed++;
+      const cost = Math.round(EVENT_PAY.trainHold * this.perks.holdCost);
+      this.jobBonus -= cost;
+      this.floatingScore.show(`DISPATCH: TRAIN HELD 60 s  −$${cost}`, '#ffcc55');
+    }
+
+    // ---- Weather changes the work (once per job, when you first grind in it) ----
+    if (this.weatherMods.label && this.isGrinding && !this.weatherNoticeShown) {
+      this.weatherNoticeShown = true;
+      this.floatingScore.show(this.weatherMods.label, '#8ad0ff', window.innerWidth / 2, window.innerHeight / 2 + 120);
+    }
+
+    // ---- Regrowth: traffic keeps wearing sections nobody has touched yet ----
+    if (this.features.wearAndHold) {
+      this.regrowTimer += dt;
+      if (this.regrowTimer >= REGROWTH_INTERVAL) {
+        this.regrowTimer = 0;
+        this.regrowUntouched();
+      }
+    }
+
+    // ---- Emergency calls ----
+    if (this.features.crews) {
+      if (this.emergency) {
+        this.emergency.left -= dt;
+        const m = Math.floor(Math.max(0, this.emergency.left) / 60);
+        const sec = Math.floor(Math.max(0, this.emergency.left) % 60).toString().padStart(2, '0');
+        if (!event) event = `🚨 EMERGENCY: clear section ${this.emergency.sec + 1} — ${m}:${sec} (+$${EMERGENCY_PAY})`;
+        if (this.emergency.left <= 0) {
+          this.floatingScore.show('EMERGENCY MISSED', '#ff8866');
+          this.emergency = null;
+        }
+      } else if (this.emergenciesLeft > 0) {
+        this.emergencyTimer -= dt;
+        if (this.emergencyTimer <= 0) {
+          this.emergencyTimer = 120 + Math.random() * 80;
+          const s = pickEmergencySection(this.segmentCompleted, this.track.getSectionIndex(pos), Math.random);
+          if (s >= 0) {
+            this.emergenciesLeft--;
+            this.emergency = { sec: s, left: EMERGENCY_SECONDS + (this.crew.spotter ? 40 : 0) };
+            this.radioDispatch.say('DISPATCH · MARGE', `Grinder 17, priority call: a crew reports section ${s + 1} is bad. Clear it in the next couple of minutes?`);
+            if (this.audioReady) this.audio.playDing();
+          }
+        }
+      }
+    }
+
+    // ---- Retry a section after an over-grind (practice: it won't score) ----
+    if (this.retryOffer) {
+      if (this.playTime > this.retryOffer.until || this.segmentCompleted[this.retryOffer.sec]) this.retryOffer = null;
+      else {
+        if (!event) event = `↺ Press Y to retry section ${this.retryOffer.sec + 1} from scratch (practice — won't score)`;
+        if (this.input.wasKeyPressed('y')) this.retrySection(this.retryOffer.sec);
+      }
+    }
+
+    // ---- Collectible: look at it from the grind camera as you pass ----
+    const col = this.collectible;
+    if (col && !col.found) {
+      col.mesh.rotation.y += dt * 2;
+      const gap = col.dist - (pos + 6);
+      if (Math.abs(gap) < 40 && !event) event = '✨ Something glints by the left rail — switch to camera 5 to look';
+      if (Math.abs(gap) < 7 && (this.camera.angle === 'grind' || this.camera.angle === 'cab')) {
+        col.found = true;
+        col.mesh.visible = false;
+        addToMuseum(col.id);
+        session.collectibles++;
+        const info = COLLECTIBLES.find((c) => c.id === col.id)!;
+        this.toast.show('🏺', `FOUND: ${info.name}`, `${info.note} — added to the museum (Career page)`);
+        if (this.audioReady) this.audio.playSweetSpot();
+      }
+    }
+
+    // ---- New kind of damage: introduce it once ----
+    const sec = this.track.getSectionIndex(pos + 6);
+    if (sec >= 0 && !this.segmentCompleted[sec]) this.introduceKind(this.sectionKinds[sec]);
+
+    this.setEvent(event);
+  }
+
+  /** Add a little more of each untouched section's damage (traffic keeps wearing it) */
+  private regrowUntouched(): void {
+    const current = this.track.getSectionIndex(this.grinderPosition);
+    const rand = Math.random;
+    let any = false;
+    for (let vi = 0; vi < this.track.segmentCount; vi++) {
+      const sec = this.track.getSectionIndex(vi * VISUAL_SEGMENT_LENGTH);
+      if (sec < 0 || sec === current || this.segmentCompleted[sec] || (this.segmentPasses[sec] || 0) > 0) continue;
+      any = true;
+      for (const rail of ['left', 'right'] as const) {
+        const profile = this.track.getProfile(vi, rail);
+        for (const peak of defectPeaks(this.sectionKinds[sec], rand)) {
+          for (const p of profile.points) {
+            const dx = p.x - peak.cx;
+            p.y -= peak.base * REGROWTH_AMOUNT * Math.exp(-(dx * dx) / (2 * peak.sigma * peak.sigma));
+          }
+        }
+        profile.markChanged();
+        this.track.rebuildSegment(vi, rail);
+      }
+    }
+    if (any && !this.regrowNoticeShown) {
+      this.regrowNoticeShown = true;
+      this.floatingScore.show('Traffic is wearing the sections you haven\'t touched', '#ffb070',
+        window.innerWidth / 2, window.innerHeight / 2 + 120);
+    }
+  }
+
+  /** Put a section back the way it was at job start, and back the consist up to it */
+  private retrySection(sec: number): void {
+    for (let vi = 0; vi < this.track.segmentCount; vi++) {
+      if (this.track.getSectionIndex(vi * VISUAL_SEGMENT_LENGTH) !== sec) continue;
+      for (const rail of ['left', 'right'] as const) {
+        const profile = this.track.getProfile(vi, rail);
+        const saved = this.startProfiles[vi][rail];
+        profile.points.forEach((p, i) => { p.y = saved[i].y; });
+        profile.markChanged();
+        this.track.rebuildSegment(vi, rail);
+      }
+    }
+    this.segmentPasses[sec] = 0;
+    this.segmentDamage[sec] = 0;
+    this.sectionMaxHeat[sec] = 0;
+    this.practiced.add(sec);
+    this.retryOffer = null;
+    this.grinderPosition = Math.max(0, this.track.sectionOffset + sec * GAME_SECTION_LENGTH - 20);
+    this.grinderSpeed = 0;
+    this.trackMap.updateSegment(sec, { grindProgress: 0, accuracy: 0 });
+    this.floatingScore.show(`SECTION ${sec + 1} RESET — PRACTICE RUN`, '#8ad0ff');
+  }
+
+  /** A photo was saved: did it meet any photo challenges? */
+  private checkPhotoChallenges(): void {
+    const cam = this.engine.camera;
+    const inView = (p: THREE.Vector3, range: number) => {
+      if (p.distanceTo(cam.position) > range) return false;
+      const v = p.clone().project(cam);
+      return v.z < 1 && Math.abs(v.x) < 1 && Math.abs(v.y) < 1;
+    };
+    const hits: PhotoId[] = [];
+    if (this.wildlife?.deerPositions().some((p) => inView(p, 90))) hits.push('deer');
+    if (this.engine.fx.uFlash.value > 0.1 || this.flash > 0.1) hits.push('lightning');
+    if (this.isGrinding && this.dayNight.darkness > 0.6) hits.push('nightsparks');
+    if (this.engine.fx.uShaft.value.z > 0.08) hits.push('sunset');
+    if (this.crews?.crews.some((c) => inView(this.track.getTrackPoint(c.dist).position, 60))) hits.push('crew');
+    if (this.fire.active && inView(this.fire.group.position, 80)) hits.push('fire');
+    if (this.weather.isSnowing && this.isGrinding) hits.push('snow');
+    const fresh = completePhotos(hits);
+    if (!fresh.length) return;
+    const c = loadCareer();
+    fresh.forEach((id, i) => {
+      c.money += PHOTO_CHALLENGES[id].reward;
+      setTimeout(() => this.toast.show('📸', `PHOTO CHALLENGE: ${PHOTO_CHALLENGES[id].name}`, `+$${PHOTO_CHALLENGES[id].reward}`), i * 600);
+    });
+    saveCareer(c);
+  }
+
+  private setEvent(text: string): void {
+    if (text === this.eventText) return;
+    this.eventText = text;
+    const el = document.getElementById('event-pill');
+    if (!el) return;
+    if (text) el.textContent = text;
+    el.style.opacity = text ? '1' : '0';
+  }
+
+  /** First time you reach a kind of damage, a card explains it (once per career) */
+  private introduceKind(kind: DefectKind | undefined): void {
+    if (!kind) return;
+    const seen = loadJSON<string[]>('kinds-seen-v1', []);
+    if (seen.includes(kind)) return;
+    saveJSON('kinds-seen-v1', [...seen, kind]);
+    const info = DEFECT_KINDS[kind];
+    this.showCard('NEW KIND OF DAMAGE', info.name, `<div>${info.tip}.</div>
+      <div style="font-size: 10px; color: #999; margin-top: 6px;">Its name shows above the profile displays while you're on it.</div>`, 7);
+  }
+
+  /** The card at the top right: new damage kinds and staged-tutorial lessons */
+  private showCard(kicker: string, title: string, bodyHTML: string, seconds: number): void {
+    // One at a time: if a card is up, wait for it to go
+    if (this.cardBusyUntil > performance.now()) {
+      this.cardQueue.push(() => this.showCard(kicker, title, bodyHTML, seconds));
+      return;
+    }
+    this.cardBusyUntil = performance.now() + seconds * 1000 + 500;
+    setTimeout(() => this.cardQueue.shift()?.(), seconds * 1000 + 600);
+    const card = document.getElementById('kind-card');
+    if (!card) return;
+    card.innerHTML = `<div style="font-size: 10px; letter-spacing: 2px; color: #ffaa00;">${kicker}</div>
+      <div style="font-size: 15px; font-weight: 700; margin: 4px 0; color: #ffcc55;">${title}</div>
+      <div style="font-size: 12px; line-height: 1.5;">${bodyHTML}</div>`;
+    card.style.opacity = '1';
+    clearTimeout(this.kindCardTimer);
+    this.kindCardTimer = window.setTimeout(() => { card.style.opacity = '0'; }, seconds * 1000);
+  }
+  private kindCardTimer = 0;
+  private cardBusyUntil = 0;
+  private cardQueue: (() => void)[] = [];
+
+  /** After an over-grind: one line on what went wrong */
+  private showFailureTip(rail: 'left' | 'right', grindX: number, profile: RailProfile): void {
+    const p = this.stonePressure[rail];
+    const worst = this.worstZonesFor(profile)[0];
+    const keys = rail === 'left' ? 'A' : 'J';
+    let tip: string;
+    if (p > 70) tip = `Pressure ${Math.round(p)}% was too much for this hump — ease off (${keys})`;
+    else if (worst && Math.abs(worst.centerX - grindX) > 4) tip = 'The stone was off the hump — aim at the arrow';
+    else if (this.stoneHeat > 60) tip = 'Hot stones cut deeper — watch the heat band';
+    else tip = 'Lift the stones (SPACE) once the line turns green';
+    setTimeout(() => this.floatingScore.show(tip, '#ffb0a0', window.innerWidth / 2, window.innerHeight / 2 + 90), 350);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Visual extras: wet ground, cloud shadows, lightning, heat haze, sun shafts
+  // ---------------------------------------------------------------------------
+
+  /** World-side weather looks (before the sky/lighting update) */
+  private updateWorldFx(dt: number): void {
+    // Wet: soaks in quickly while it rains, dries slowly afterwards
+    const rain = this.weather.isRaining ? this.weather.intensity : 0;
+    this.wetness = rain > 0 ? Math.min(1, this.wetness + rain * 0.25 * dt) : Math.max(0, this.wetness - 0.01 * dt);
+    this.dayNight.wetness = this.wetness;
+    this.weatherMods = weatherModifiers(this.wetness, this.weather.snowCover > 0.5 || this.weather.isSnowing);
+    // Dawn: frost in the mountains, sea fog on the coast
+    this.dawnAmount += ((this.dayNight.currentName.toLowerCase() === 'dawn' ? 1 : 0) - this.dawnAmount) * Math.min(1, dt * 0.5);
+    const seaFog = this.currentJob?.region === 'coast' ? 1 - 0.45 * this.dawnAmount : 1;
+    if (this.vistaTime < 0) this.dayNight.fogScale = (this.mods.includes('fog') ? 0.4 : 1) * seaFog;
+    if (this.atmos && this.grinder) {
+      const wind = 0.3 + this.weather.intensity * 0.9 + (this.currentJob?.region === 'prairie' ? 0.3 : 0);
+      this.atmos.update(dt, this.engine.camera, this.grinder.cars.map((c) => this.grinderPosition + c.offset),
+        this.wetness, this.weather.isSnowing, this.dayNight.darkness, this.dawnAmount, wind);
+    }
+    this.grindEffects.spray.wet = this.wetness;
+    const ballast = this.track.ballastMaterial;
+    if (ballast) {
+      ballast.roughness = 1 - 0.6 * this.wetness;
+      ballast.color.setHex(0xc8c4bc).multiplyScalar(1 - 0.35 * this.wetness);
+    }
+    // Cloud shadows drift with the wind on bright days
+    if (this.cloudShadows) {
+      this.cloudShadows.uCloudOffset.value.x += 2.2 * dt;
+      this.cloudShadows.uCloudOffset.value.y += 1.1 * dt;
+      this.cloudShadows.uCloudAmount.value = 0.3 * (1 - this.dayNight.darkness) * (1 - this.weather.intensity)
+        * (this.weather.snowCover > 0.5 ? 0.5 : 1);
+    }
+  }
+
+  /** Output-pass effects (Engine.fx): heat haze, lightning, sun shafts */
+  private updateScreenFx(dt: number): void {
+    const fx = this.engine.fx;
+    fx.uTime.value += dt;
+    const cam = this.engine.camera;
+    const reduced = getSettings().reducedFlashing;
+
+    // Lightning in heavy rain: a double flicker, thunder a few seconds later
+    if (this.weather.isRaining && this.weather.intensity > 0.55) {
+      this.lightningTimer -= dt;
+      if (this.lightningTimer <= 0) {
+        this.lightningTimer = 7 + Math.random() * 14;
+        const near = Math.random();
+        this.flash = (reduced ? 0.2 : 0.6) + near * (reduced ? 0.1 : 0.4);
+        setTimeout(() => { this.flash = Math.max(this.flash, reduced ? 0.15 : 0.5); }, 140);
+        if (this.audioReady) this.audio.playThunder(0.6 + (1 - near) * 3, near);
+      }
+    }
+    this.flash = Math.max(0, this.flash - dt * 4);
+    fx.uFlash.value = this.flash * (1 - 0.6 * (1 - this.dayNight.darkness));
+
+    // Heat haze above hot stones
+    const hot = this.gameStarted && this.isGrinding ? Math.max(0, (this.stoneHeat - 30) / 70) : 0;
+    this.hazeLevel += (hot - this.hazeLevel) * Math.min(1, dt * 2);
+    if (this.hazeLevel > 0.01) {
+      const tp = this.track.getTrackPoint(Math.max(0.1, Math.min(this.trackLength - 0.1, this.grinderPosition + 6)));
+      // Smaller and fainter the further away the stones are
+      const dist = cam.position.distanceTo(tp.position);
+      const v = this._fxVec.copy(tp.position).project(cam);
+      fx.uHaze.value.set(v.x * 0.5 + 0.5, v.y * 0.5 + 0.5,
+        v.z < 1 ? this.hazeLevel * Math.min(1, Math.max(0.15, 10 / dist)) : 0, Math.min(0.25, Math.max(0.03, 2.5 / dist)));
+    } else fx.uHaze.value.z = 0;
+
+    // Sun shafts: low sun in view, clear sky
+    const sun = this.dayNight.sunDirection;
+    const v = this._fxVec.copy(cam.position).addScaledVector(sun, 500).project(cam);
+    const onScreen = v.z < 1 && Math.abs(v.x) < 1.4 && v.y > -0.6 && v.y < 1.5;
+    const low = Math.max(0, 1 - Math.max(0, sun.y) / 0.6);
+    const strength = onScreen ? low * (1 - this.dayNight.darkness) * (1 - this.weather.overcast) * (1 - this.weather.intensity) : 0;
+    fx.uShaft.value.set(v.x * 0.5 + 0.5, v.y * 0.5 + 0.5, strength);
+  }
+
+  /** The 3-star streak is broken (over-grind / overheat) */
+  private loseCombo(reason: string): void {
+    // A streak saver keeps a combo of 3+ alive once
+    if (this.combo.count >= 3 && this.savers.savers > 0) {
+      this.savers = { ...this.savers, savers: this.savers.savers - 1 };
+      saveJSON('savers-v1', this.savers);
+      this.floatingScore.show(`${reason} — 🛟 STREAK SAVED (${this.savers.savers} left)`, '#8ad0ff',
+        window.innerWidth / 2, window.innerHeight / 2 - 90);
+      return;
+    }
+    const had = this.combo.count > 1;
+    this.combo.break();
+    this.updateComboHud();
+    if (had) {
+      this.floatingScore.show(`${reason} — COMBO LOST`, '#ff6655',
+        window.innerWidth / 2, window.innerHeight / 2 - 90);
+      if (this.audioReady) this.audio.playComboBreak();
+    }
+  }
+
+  /** Combo pill in the HUD: hidden until there's a streak worth showing */
+  private updateComboHud(): void {
+    const el = this.comboEl ??= document.getElementById('combo-pill');
+    if (!el) return;
+    const n = this.combo.count;
+    if (n < 2) { el.style.opacity = '0'; return; }
+    el.style.opacity = '1';
+    el.textContent = `COMBO ${n}  ×${this.combo.multiplier.toFixed(2).replace(/\.?0+$/, '')}${this.savers.savers ? `  · ${this.savers.savers} SAVER${this.savers.savers > 1 ? 'S' : ''}` : ''}`;
+    el.style.color = n >= 5 ? '#ff66ff' : '#ffaa00';
+    // little pop (transform only: cheap)
+    el.animate([{ transform: 'translateX(-50%) scale(1.25)' }, { transform: 'translateX(-50%) scale(1)' }], { duration: 220 });
+  }
+  private comboEl: HTMLElement | null = null;
+  private savers: SaverState = loadJSON<SaverState>('savers-v1', { savers: 0, progress: 0 });
+
+  /** Brief red flash around the screen edge: you cut below the target */
+  private flashVignette(): void {
+    if (getSettings().reducedFlashing) return;
+    const el = this.vignetteEl ??= document.getElementById('overgrind-vignette');
+    if (!el) return;
+    el.animate([{ opacity: 0.85 }, { opacity: 0 }], { duration: 450, easing: 'ease-out' });
+  }
+  private vignetteEl: HTMLElement | null = null;
+
   private completeSegment(sectionIndex: number, accuracy: number): void {
+    // The job's final section: a moment of slow motion
+    if (this.completedCount === this.sectionCount - 1 && !getSettings().reducedMotion) this.engine.slowMo(1400, 0.3);
     const hadSlowOrder = this.segmentSlowOrder[sectionIndex];
     if (hadSlowOrder) this.slowSigns?.clear(sectionIndex); // board spins to green
     this.segmentCompleted[sectionIndex] = true;
@@ -1072,6 +2021,48 @@ export class Game {
 
     // Star rating: accuracy, minus penalties for extra passes and over-grind damage
     const stars = sectionStars(accuracy, this.segmentPasses[sectionIndex] || 0, this.segmentDamage[sectionIndex] || 0);
+    // Skill scoring: perfect pass, combo, bonus pay (see game/scoring.ts)
+    const run: SectionRun = {
+      passes: this.segmentPasses[sectionIndex] || 0,
+      damage: this.segmentDamage[sectionIndex] || 0,
+      maxHeat: this.sectionMaxHeat[sectionIndex] || 0,
+    };
+    const perfect = isPerfectPass(accuracy, run);
+    if (perfect) this.perfectCount++;
+    const practiced = this.practiced.has(sectionIndex);
+    let bonus = practiced ? 0 : Math.round(this.combo.sectionDone(stars, perfect) * STONE_GRADES[this.stoneGrade].bonus);
+    if (practiced) setTimeout(() => this.floatingScore.show('PRACTICE SECTION — NOT SCORED', '#aaaaaa',
+      window.innerWidth / 2, window.innerHeight / 2 - 190), 300);
+    // Close call: cleared with the revenue train almost here
+    const trainIn = this.deadline.secondsLeft;
+    if (!practiced && trainIn !== null && trainIn < 15) {
+      bonus += EVENT_PAY.trainCloseCall;
+      setTimeout(() => this.floatingScore.show(`CLOSE CALL!  +$${EVENT_PAY.trainCloseCall}`, '#ff66ff', window.innerWidth / 2, window.innerHeight / 2 - 220), 500);
+    }
+    // Streak savers: one for every few perfect passes
+    if (perfect && !practiced) {
+      const before = this.savers.savers;
+      this.savers = earnSaver(this.savers);
+      saveJSON('savers-v1', this.savers);
+      if (this.savers.savers > before) this.toast.show('🛟', 'STREAK SAVER EARNED', 'Your next combo break is forgiven');
+      session.perfects++;
+    }
+    if (this.emergency && this.emergency.sec === sectionIndex) {
+      bonus += EMERGENCY_PAY;
+      this.emergency = null;
+      setTimeout(() => this.floatingScore.show(`EMERGENCY CLEARED  +$${EMERGENCY_PAY}`, '#7dff8a',
+        window.innerWidth / 2, window.innerHeight / 2 - 190), 300);
+      this.radioDispatch.say('DISPATCH · MARGE', 'Emergency section cleared. That one\'s going in your file, Grinder 17.');
+    }
+    // Under par: finished in no more passes than the estimate at job start
+    const par = this.sectionPar[sectionIndex] ?? 99;
+    if (run.passes + 1 <= par && par > 1) {
+      bonus += EVENT_PAY.underPar;
+      setTimeout(() => this.floatingScore.show(`UNDER PAR  +$${EVENT_PAY.underPar}`, '#8ad0ff',
+        window.innerWidth / 2, window.innerHeight / 2 - 150), 600);
+    }
+    this.jobBonus += bonus;
+    this.updateComboHud();
     // Track restored: each section is ~20m = 65ft of rail returned to full speed
     const sectionFt = Math.round(GAME_SECTION_LENGTH * 3.281); // metres → feet
     this.trackRestoredFt += sectionFt;
@@ -1089,12 +2080,26 @@ export class Game {
       }, order * 110);
     });
     const sectionStart = track.sectionOffset + sectionIndex * GAME_SECTION_LENGTH;
-    this.grindEffects.celebrate(track, sectionStart, sectionStart + GAME_SECTION_LENGTH);
+    // Bigger celebration for better work
+    const strength = perfect ? 2 : stars >= 3 ? 1.4 : stars === 2 ? 1 : 0.6;
+    this.grindEffects.celebrate(track, sectionStart, sectionStart + GAME_SECTION_LENGTH, strength);
+    // Make it land: a brief freeze and a punch-in (bigger for better work)
+    this.engine.hitStop(perfect ? 110 : stars >= 3 ? 80 : 50);
+    if (getSettings().rumble) this.input.rumble(perfect ? 0.7 : 0.45, 0.5, perfect ? 380 : 220);
+    this.camera.punch(perfect ? 1.6 : stars >= 3 ? 1.1 : 0.6);
 
     // Floating score popup
     this.floatingScore.showSegmentComplete(sectionIndex + 1, stars, sectionFt);
-    if (this.consecutiveCompleted > 1) {
-      setTimeout(() => this.floatingScore.showStreak(this.consecutiveCompleted), 400);
+    if (perfect) {
+      setTimeout(() => this.floatingScore.show(`PERFECT PASS  +$${bonus}`, '#ffd84a',
+        window.innerWidth / 2, window.innerHeight / 2 - 120), 320);
+    } else if (bonus > 0) {
+      setTimeout(() => this.floatingScore.show(`+$${bonus}`, '#9fe0a0',
+        window.innerWidth / 2, window.innerHeight / 2 - 120), 320);
+    }
+    if (this.combo.count > 1) {
+      setTimeout(() => this.floatingScore.show(`COMBO ×${this.combo.multiplier.toFixed(2).replace(/\.?0+$/, '')}`,
+        this.combo.count >= 5 ? '#ff66ff' : '#ffaa00', window.innerWidth / 2, window.innerHeight / 2 - 90), 450);
     }
 
     // SLOW ORDER LIFTED banner
@@ -1110,11 +2115,12 @@ export class Game {
     }
 
     // Track map
-    this.trackMap.updateSegment(sectionIndex, { completed: true, slowOrder: false });
+    this.segmentStars[sectionIndex] = stars;
+    this.trackMap.updateSegment(sectionIndex, { completed: true, slowOrder: false, stars });
 
-    // Audio
+    // Audio: the fanfare scales with how well it went
     if (this.audioReady) {
-      this.audio.playSegmentComplete();
+      this.audio.playSectionFanfare(stars, perfect, this.combo.count);
     }
 
     // Screen shake for completion
@@ -1202,6 +2208,7 @@ export class Game {
 
   /** Toggle the HUD-free cinematic look (CSS: body.cinematic in index.html) */
   private setCinematic(on: boolean): void {
+    this.hints?.hideNow();
     document.body.classList.toggle('cinematic', on);
   }
 
@@ -1209,6 +2216,27 @@ export class Game {
     if (!this.inspectionPass) return;
 
     this.inspectionTimer += dt;
+
+    // Last shot: crane up over the restored line, then the report
+    if (this.vistaTime >= 0) {
+      this.vistaTime += dt;
+      const from = this.track.sectionOffset;
+      const to = from + this.sectionCount * GAME_SECTION_LENGTH;
+      this.camera.updateVista(this.track, from, to, this.grinderPosition, Math.min(1, this.vistaTime / 4.5));
+      // Push the fog back as the camera rises, so the whole line is visible
+      this.dayNight.fogScale = 1 + Math.min(1, this.vistaTime / 3) * 1.8;
+      if (this.vistaTime > 4.6 && !this.captureRequested) {
+        this.captureRequested = true;
+        this.engine.captureFrame().then((b) => { this.resultFrame = b; });
+      }
+      if (this.vistaTime > 5) {
+        this.vistaTime = -1;
+        this.dayNight.fogScale = 1;
+        this.inspectionPass = false;
+        this.showCompletionReport();
+      }
+      return;
+    }
 
     // Fast drive through the section area
     this.grinderSpeed = 25;
@@ -1232,13 +2260,14 @@ export class Game {
     // End after passing through the section area
     const secEnd = this.track.sectionOffset + this.sectionCount * GAME_SECTION_LENGTH + 30;
     if (this.grinderPosition > secEnd) {
-      this.inspectionPass = false;
-      setTimeout(() => this.showCompletionReport(), 500);
+      this.grinderSpeed = 0;
+      this.vistaTime = 0;
+      this.floatingScore.show('TRACK RESTORED', '#7dff8a', window.innerWidth / 2, window.innerHeight * 0.3);
     }
   }
 
   private showCompletionReport(): void {
-    const postJobReport = this.inspectionReport.computeJobReport(this.track, this.targetProfile);
+    const postJobReport = this.labelDefects(this.inspectionReport.computeJobReport(this.track, this.targetProfile));
     const elapsed = this.playTime; // excludes time spent paused
     const completedCount = this.completedCount;
 
@@ -1246,13 +2275,49 @@ export class Game {
     // RQI-based stars, minus one per delayed revenue train (never below 1)
     const stars = jobStars(rqiAfter, this.deadline.missedWindows);
 
-    // Save personal best for this job (in the browser's localStorage)
+    // Previous best (for the comparison line), then save this run
+    const prev = this.currentJob ? loadRecords()[this.currentJob.id] : undefined;
     const { newBest } = this.currentJob
       ? recordResult(this.currentJob.id, { stars, rqi: rqiAfter, time: elapsed })
       : { newBest: false };
 
     // Career: get paid for the contract (more stars = more pay)
-    const pay = this.currentJob ? jobPay(this.currentJob.basePay, stars) : 0;
+    const practice = this.currentJob?.id === 'practice';
+    // Grind plan: stayed within the passes you planned?
+    if (this.plannedPasses > 0 && !practice) {
+      const actual = this.segmentPasses.reduce((a, b) => a + (b || 0), 0) + this.sectionCount;
+      const estimate = this.sectionPar.reduce((a, b) => a + b, 0);
+      const pb = planBonus(this.plannedPasses, actual, estimate, this.sectionCount);
+      this.jobBonus += pb;
+      setTimeout(() => this.toast.show('📋', pb > 0 ? `PLAN MET  +$${pb}` : 'PLAN MISSED',
+        `${actual} passes against a plan of ${this.plannedPasses}`), 600);
+    }
+    // Long haul: record this shift; the last one pays the big bonus
+    if (this.currentJob?.id.startsWith('haul-')) {
+      const h = loadLongHaul();
+      h.stars.push(jobStars(this.labelDefects(this.inspectionReport.computeJobReport(this.track, this.targetProfile)).overallRQI, this.deadline.missedWindows));
+      h.shift++;
+      if (h.shift >= LONG_HAUL_SHIFTS) {
+        const b = longHaulBonus(h.stars);
+        this.jobBonus += b;
+        setTimeout(() => this.toast.show('🚂', `LONG HAUL COMPLETE  +$${b}`, h.stars.map((s) => '★'.repeat(s)).join(' · ')), 900);
+        saveLongHaul({ seed: Math.floor(Math.random() * 1e9), shift: 0, stars: [] });
+      } else {
+        saveLongHaul(h);
+        setTimeout(() => this.toast.show('🚂', `SHIFT ${h.shift}/${LONG_HAUL_SHIFTS} DONE`, 'The next shift is waiting on the contract screen'), 900);
+      }
+    }
+    // Finished with the revenue train still out: the main line is clear early
+    const spare = this.deadline.secondsLeft;
+    if (spare !== null && spare > 0) this.jobBonus += Math.round(spare * EVENT_PAY.earlyClearPerSecond);
+    // Risk modifiers and rank raise the contract pay
+    const contractPay = this.currentJob && !practice
+      ? Math.round(jobPay(this.currentJob.basePay, stars) * modifierPay(this.mods) * this.perks.pay) : 0;
+    const pay = practice ? 0 : Math.max(0, contractPay + this.jobBonus);
+    const grade: Grade = jobGrade(stars, this.perfectCount, this.combo.best, this.sectionCount);
+    if (!practice) this.afterJobProgress(stars, grade, rqiAfter, elapsed, pay);
+    const jobId = this.currentJob?.id ?? '';
+    const rank = jobId && !practice ? boardRank(jobId, pay) : -1;
     const career = loadCareer();
     career.money += pay;
     saveCareer(career);
@@ -1269,10 +2334,105 @@ export class Game {
       missedWindows: this.deadline.missedWindows,
       newBest,
       pay,
-    }).then(() => {
-      // Return to job select for next contract
-      this.startJobSelect();
+      contractPay,
+      bonusPay: this.jobBonus,
+      perfects: this.perfectCount,
+      bestCombo: this.combo.best,
+      grade,
+      prevBest: prev ? { stars: prev.bestStars, rqi: prev.bestRQI, time: prev.bestTime } : undefined,
+      nextJobName: this.suggestNextJob()?.name,
+      profiles: this.profilesBefore.map((before, s) => ({
+        before, after: this.track.getProfile(this.middleSegmentOf(s), 'left').points.map((p) => ({ x: p.x, y: p.y })),
+      })),
+      target: this.targetProfile.points.map((p) => ({ x: p.x, y: p.y })),
+      nextGoal: currentGoal(),
+      onShare: async () => {
+        const blob = await makeShareCard({
+          route: this.currentJob?.name ?? 'Rail grinding', grade, gradeColor: GRADE_COLORS[grade], stars,
+          pay: formatMoney(pay), time: formatTime(elapsed), rqi: rqiAfter.toFixed(0),
+        }, this.resultFrame);
+        return blob ? shareBlob(blob) : 'downloaded';
+      },
+      boardRank: rank,
+      onInitials: rank >= 0 ? (initials) => addBoardEntry(jobId, {
+        initials, score: pay, grade, stars, time: elapsed, date: todayKey(),
+      }) : undefined,
+    }).then((action) => {
+      if (action === 'replay' && this.currentJob) this.rebuildForJob(this.currentJob);
+      else this.startJobSelect(); // next contract
     });
+  }
+
+  /**
+   * Career bookkeeping after a job: stats, daily streak, route condition, best
+   * grade & medal, the ghost of a new best run, achievements and new paint
+   * schemes (announced with toasts).
+   */
+  private afterJobProgress(stars: number, grade: Grade, rqiAfter: number, elapsed: number, pay: number): void {
+    const job = this.currentJob;
+    if (!job) return;
+    const isDaily = job.id.startsWith('daily-');
+    const isRandom = job.id.startsWith('random-');
+    const liveriesBefore = new Set(LIVERIES.filter((l) => l.unlocked(liveryProgress())).map((l) => l.id));
+
+    const s = loadStats();
+    s.jobs++;
+    s.sections += this.completedCount;
+    s.perfects += this.perfectCount;
+    s.metalMm += this.totalMetalRemoved;
+    s.feetRestored += this.trackRestoredFt;
+    s.bestCombo = Math.max(s.bestCombo, this.combo.best);
+    s.overgrinds += this.overgrindCount;
+    s.totalEarned += pay;
+    if (grade === 'S') s.sGrades++;
+    const night = this.dayNight.darkness > 0.6;
+    const snow = this.weather.snowCover > 0.5 || this.weather.isSnowing;
+    if (night) s.nightJobs++;
+    if (snow) s.snowJobs++;
+    if (isRandom) s.randoms++;
+    if (isDaily) {
+      const today = todayKey();
+      s.dailyStreak = nextDailyStreak(s, today);
+      if (s.lastDaily !== today) s.dailies++;
+      s.lastDaily = today;
+    }
+    saveStats(s);
+
+    if (!isDaily && !isRandom) updateRouteConditions(job.id, rqiAfter);
+    recordGradeAndMedal(job.id, grade, timeMedal(elapsed, this.sectionCount));
+
+    // New best time on this contract: keep this run as the ghost to race
+    const prevGhost = loadGhost(job.id);
+    if (!prevGhost || this.ghostSamples.length < prevGhost.length) saveGhost(job.id, this.ghostSamples);
+
+    const fresh = checkAchievements({
+      jobId: job.id, stars, grade, sections: this.sectionCount, perfects: this.perfectCount,
+      bestCombo: this.combo.best, overgrinds: this.overgrindCount, missedWindows: this.deadline.missedWindows,
+      night, snow, deadlineSpare: this.deadline.secondsLeft ?? 0, daily: isDaily, random: isRandom,
+    }, s);
+    fresh.forEach((a, i) => setTimeout(() => this.toast.show('🏆', 'ACHIEVEMENT: ' + a.name, a.description), 900 + i * 700));
+    session.jobs++;
+    session.earned += pay;
+    session.achievements += fresh.length;
+    const liveriesNow = LIVERIES.filter((l) => l.unlocked(liveryProgress()) && !liveriesBefore.has(l.id));
+    liveriesNow.forEach((l, i) => setTimeout(() => this.toast.show('🎨', 'NEW PAINT: ' + l.name, 'Choose it on the Career page'),
+      900 + (fresh.length + i) * 700));
+    void unlockedAchievements;
+  }
+
+  /** Name each section in a report by its real damage kind */
+  private labelDefects<R extends { sections: Array<{ index: number; defectType: string }> }>(report: R): R {
+    for (const sec of report.sections) {
+      const kind = this.sectionKinds[sec.index];
+      if (kind) sec.defectType = DEFECT_KINDS[kind].name;
+    }
+    return report;
+  }
+
+  /** The contract to suggest next: the next one in the list after this one */
+  private suggestNextJob(): JobDefinition | undefined {
+    const i = JOBS.findIndex((j) => j.id === this.currentJob?.id);
+    return i >= 0 ? JOBS[(i + 1) % JOBS.length] : undefined;
   }
 
   /** Show job selection and start a new job */
@@ -1325,6 +2485,21 @@ export class Game {
       disposeObject3D(this.landmarks.group);
       this.landmarks = null;
     }
+    if (this.crews) {
+      this.engine.scene.remove(this.crews.group);
+      disposeObject3D(this.crews.group);
+      this.crews = null;
+    }
+    if (this.wildlife) {
+      this.engine.scene.remove(this.wildlife.group);
+      disposeObject3D(this.wildlife.group);
+      this.wildlife = null;
+    }
+    if (this.atmos) {
+      this.engine.scene.remove(this.atmos.group);
+      disposeObject3D(this.atmos.group);
+      this.atmos = null;
+    }
     if (this.passingTrain) {
       this.engine.scene.remove(this.passingTrain.group);
       this.engine.scene.remove(this.passingTrain.adjacentTrack);
@@ -1348,6 +2523,11 @@ export class Game {
     this.grinderSpeed = 0;
     this.lastSectionIndex = -1;
     this.consecutiveCompleted = 0;
+    this.combo.reset();
+    this.jobBonus = 0;
+    this.perfectCount = 0;
+    this.overheated = false;
+    this.sectionMaxHeat = new Array(this.sectionCount).fill(0);
     this.stoneAngle = { left: 0, right: 0 };
     this.stonePressure = { left: 50, right: 50 };
     this.stoneHeat = 0;
@@ -1379,7 +2559,15 @@ export class Game {
 
     // New environment (coastal routes keep the west side clear for the sea)
     const coast = job.scenery === 'coast';
+    // Season: built-in contracts follow the calendar, random routes roll their own
+    this.season = job.id.startsWith('random-')
+      ? (['spring', 'summer', 'autumn', 'winter'] as Season[])[(job.seed ?? 0) % 4]
+      : seasonForMonth(new Date().getMonth());
+    const look = SEASON_LOOK[this.season];
+    this.dayNight.seasonGround = look.grassAmount > 0 ? new THREE.Color(look.grass).multiplyScalar(0.8) : null;
+    this.dayNight.seasonAmount = look.grassAmount;
     this.environment = new Environment(this.track, {
+      season: this.season,
       clearSide: coast ? { side: -1, beyond: 7 } : undefined,
       blocked: (x, z) => landmarks.blocks(x, z),
       snow: this.weather.snowCover,
@@ -1396,6 +2584,7 @@ export class Game {
     this.passingTrain.setTrack(this.track);
     this.engine.scene.add(this.passingTrain.group);
     this.engine.scene.add(this.passingTrain.adjacentTrack);
+    this.buildJobEvents(job);
     this.giveInstancedCastersOwnDepthMaterial();
 
     // Set time of day from job
@@ -1448,6 +2637,7 @@ export class Game {
     if (this.audioReady) this.audio.stopGrinding();
 
     this.buildWorld(job);
+    this.showLoadingTip(job);
     // Compile every shader for the new world now (in the background), so the
     // first spark / freight train / headlight doesn't stall the game mid-play
     this.engine.prewarm();
@@ -1455,22 +2645,61 @@ export class Game {
     this.upgrades = upgradeEffects(loadCareer().upgrades);
 
     // Compute pre-job report
-    const preJobReport = this.inspectionReport.computeJobReport(this.track, this.targetProfile);
+    const preJobReport = this.labelDefects(this.inspectionReport.computeJobReport(this.track, this.targetProfile));
     this.preJobRQI = preJobReport.overallRQI;
 
+    this.grinder.setUpgrades(loadCareer().upgrades);
+    this.photoMode.stampText = `${job.name} · ${job.location}`;
+    this.ghost = loadGhost(job.id);
+    this.ghostSamples = [];
+    this.ghostTimer = 0;
+    this.overgrindCount = 0;
+    this.trackMap.setGhostPosition(-1);
+
     const startGame = () => {
+      if (this.mods.includes('night')) this.dayNight.setTime('night');
       this.gameStarted = true;
       this.jobComplete = false;
       this.playTime = 0;
       this.deadline.reset();
+      // The dispatcher's story moves on as your career does
+      // Staged tutorial: this job's one new lesson
+      const lesson = this.currentJob?.id === 'practice' ? null : lessonFor(loadStats().jobs);
+      if (lesson) {
+        setTimeout(() => this.showCard('NEW ON THIS JOB', lesson.title,
+          lesson.lines.map((l) => `<div style="margin-bottom: 4px;">• ${l}</div>`).join(''), 14), 1200);
+      }
+      const beat = nextStoryBeat(loadStats().jobs);
+      if (beat) {
+        markStorySeen(beat.id);
+        setTimeout(() => this.radioDispatch.say(beat.lines[0].from, beat.lines[0].text), 2500);
+      }
     };
 
+    this.stoneGrade = 'standard';
+    this.plannedPasses = 0;
     // First job: skip report, go straight to guided gameplay
     if (this.guidedTutorial.isFirstJob()) {
       startGame();
     } else {
       // Subsequent jobs: show the inspection report
-      this.inspectionReport.showPreJobReport(preJobReport).then(startGame);
+      // The report has its own reading time: don't show the loading tip through it
+      const tipBox = document.getElementById('loading-tip');
+      if (tipBox) tipBox.style.opacity = '0';
+      this.loadingTipTime = -1;
+      const wm = weatherModifiers(0, this.weather.snowCover > 0.5);
+      this.inspectionReport.showPreJobReport(preJobReport, {
+        estimate: job.id === 'practice' ? 0 : this.sectionPar.reduce((a, b) => a + b, 0),
+        profileName: TRACK_CLASSES[this.trackClass].name, profileTip: TRACK_CLASSES[this.trackClass].tip,
+        notes: [
+          ...(this.sectionTurn.some((t) => Math.abs(t) > 0.03) ? ['CURVES: the outer rail wears its gauge face, the inner rail its crown'] : []),
+          ...(wm.label ? [wm.label] : []),
+        ],
+      }).then((p) => {
+        this.stoneGrade = p.stone;
+        this.plannedPasses = p.plan;
+        startGame();
+      });
     }
   }
 

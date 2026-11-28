@@ -53,6 +53,52 @@ export class ProfileRenderer {
     this.ctx = this.canvas.getContext('2d')!;
   }
 
+  /** Simple display: no grid / legend, just the curves and the aim marker (key V) */
+  simple = false;
+
+  /**
+   * The one thing a new player needs: where to aim, and what to do now.
+   *   - a big arrow over the worst spot ("AIM HERE")
+   *   - stone off target: which way to move it ("◀ AIM" / "AIM ▶")
+   *   - stone on target while grinding: "PUSH HARDER" if a deep hump is barely
+   *     being cut, "EASE OFF" if the rail is almost down to the target line
+   */
+  private drawGuidance(
+    ctx: CanvasRenderingContext2D, current: RailProfile, target: TargetProfile,
+    toCanvasX: (x: number) => number, toCanvasY: (y: number) => number, minY: number, width: number,
+  ): void {
+    const worst = this.worstZones[0];
+    if (!worst || worst.severity <= target.tolerance * 0.5) return;
+    const wx = toCanvasX(worst.centerX);
+    const top = toCanvasY(minY) + 2;
+    // Arrow over the worst spot
+    ctx.fillStyle = worst.severity < 0 ? '#ff3366' : '#ffd84a';
+    ctx.beginPath();
+    ctx.moveTo(wx, top + 16);
+    ctx.lineTo(wx - 7, top + 6);
+    ctx.lineTo(wx + 7, top + 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = 'bold 8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('AIM HERE', wx, top + 3);
+
+    if (!this.stoneVisible) return;
+    const sx = toCanvasX(this.stoneX);
+    const off = Math.abs(this.stoneX - worst.centerX);
+    let cue = '';
+    if (off > 3) cue = sx < wx ? 'AIM ▶' : '◀ AIM';
+    else if (this.stoneGrinding) {
+      const dev = current.getDeviationAtX(this.stoneX, target);
+      if (dev < target.tolerance * 1.5) cue = 'EASE OFF';
+      else if (dev > target.tolerance * 4 && this.stonePressure < 55) cue = 'PUSH HARDER';
+    }
+    if (!cue) return;
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = cue === 'EASE OFF' ? '#ff8a5a' : '#ffffff';
+    ctx.fillText(cue, width / 2, toCanvasY(minY) + 30);
+  }
+
   /** Set the worst deviation zones for pulsing highlights */
   setWorstZones(zones: Array<{ centerX: number; severity: number }>): void {
     this.worstZones = zones;
@@ -98,7 +144,7 @@ export class ProfileRenderer {
   draw(current: RailProfile, target?: TargetProfile): void {
     const now = performance.now();
     // Everything on the display except the rail curve itself
-    const key = `${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
+    const key = `${this.simple}|${this.stoneX}|${this.stoneWidth}|${this.stonePressure}|`
       + `${this.stoneVisible}|${this.stoneGrinding}|${this.damageCount}|${this.passCount}|`
       + `${this.borderFlash}|${this.mirrored}|${isColorblindMode()}|${this.worstZones.length}`;
     const animating = this.worstZones.length > 0 || (this.ghostProfile !== null && this.ghostAlpha > 0.01);
@@ -149,8 +195,9 @@ export class ProfileRenderer {
       : (x: number) => PADDING + ((x - bounds.minX) / rangeX) * drawW;
     const toCanvasY = (y: number) => PADDING + ((y - minY) / rangeY) * drawH;
 
-    // Draw grid (from a cached image unless the plot's range changed)
-    this.drawGridCached(ctx, bounds.minX, bounds.maxX, minY, maxY, toCanvasX, toCanvasY);
+    // Draw grid (from a cached image unless the plot's range changed);
+    // the simple display leaves it out
+    if (!this.simple) this.drawGridCached(ctx, bounds.minX, bounds.maxX, minY, maxY, toCanvasX, toCanvasY);
 
     // Draw stone contact zone (always visible when stone is shown)
     if (this.stoneVisible) {
@@ -265,14 +312,7 @@ export class ProfileRenderer {
       ctx.beginPath();
       ctx.arc(zx, toCanvasY(0), 6, 0, Math.PI * 2);
       ctx.fill();
-      // Text label only on the single worst zone (zones are sorted worst-first);
-      // the rest get just the pulsing dot, so labels never pile up
-      if (zi === 0) {
-        ctx.fillStyle = isOverground ? getPalette().over : getPalette().bad;
-        ctx.font = '8px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(isOverground ? 'OVER!' : 'GRIND', zx, toCanvasY(minY) + 14);
-      }
+      // (the worst one also gets the big "AIM HERE" marker: see drawGuidance)
     }
 
     // Border flash on over-grind
@@ -282,8 +322,11 @@ export class ProfileRenderer {
       ctx.strokeRect(2, 2, width - 4, height - 4);
     }
 
-    // Draw labels and legend
-    this.drawLabels(ctx, width, current, target);
+    // Big "aim here" marker and what to do next
+    if (target) this.drawGuidance(ctx, current, target, toCanvasX, toCanvasY, minY, width);
+
+    // Draw labels and legend (detailed display only)
+    if (!this.simple) this.drawLabels(ctx, width, current, target);
   }
 
   /** Draw the stone contact zone — dimmed when aiming, bright when grinding */

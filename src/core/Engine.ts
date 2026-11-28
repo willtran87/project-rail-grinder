@@ -54,9 +54,41 @@ const OUTPUT_FRAGMENT = /* glsl */ `
   uniform vec3 uGain;
   uniform float uSaturation;
   uniform float uContrast;
+  // Screen effects (see ScreenFx): heat haze, lightning, sun shafts
+  uniform float uTime;
+  uniform float uAspect;
+  uniform vec4 uHaze;        // xy: centre (uv), z: strength, w: radius
+  uniform float uFlash;      // lightning: 0..1
+  uniform vec3 uShaft;       // xy: sun (uv), z: strength
+  uniform vec3 uShaftColor;
   varying vec2 vUv;
   void main() {
-    gl_FragColor = vec4(texture2D(tDiffuse, vUv).rgb, 1.0);
+    vec2 uv = vUv;
+    // Heat haze: wobble the picture just above the hot stones
+    if (uHaze.z > 0.001) {
+      vec2 d = (uv - uHaze.xy) * vec2(uAspect, 1.0);
+      float m = uHaze.z * smoothstep(uHaze.w, 0.0, length(d * vec2(0.6, 1.0))) * smoothstep(-0.2, 0.3, (uv.y - uHaze.y) / uHaze.w);
+      uv += vec2(sin(uv.y * 160.0 + uTime * 9.0), cos(uv.x * 120.0 + uTime * 6.0) * 0.5) * 0.0035 * m;
+    }
+    vec3 col = texture2D(tDiffuse, uv).rgb;
+    // Sun shafts: smear the brightest sky toward the sun; trees and the
+    // consist block it, so beams break around them
+    if (uShaft.z > 0.001) {
+      vec2 step = (uShaft.xy - uv) / 20.0;
+      vec2 p = uv;
+      float acc = 0.0;
+      float w = 1.0;
+      for (int i = 0; i < 20; i++) {
+        p += step;
+        vec3 s = texture2D(tDiffuse, p).rgb;
+        acc += max(0.0, dot(s, vec3(0.333)) - 0.9) * w;
+        w *= 0.94;
+      }
+      float fall = smoothstep(0.9, 0.0, length((uv - uShaft.xy) * vec2(uAspect, 1.0)));
+      col += uShaftColor * acc * 0.06 * uShaft.z * fall;
+    }
+    col += vec3(0.75, 0.8, 1.0) * uFlash * 1.6;
+    gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     vec3 c = gl_FragColor.rgb;
@@ -76,6 +108,16 @@ export interface GradeUniforms {
   uContrast: { value: number };
 }
 
+/** Screen-space effects in the output pass (set each frame by Game) */
+export interface ScreenFx {
+  uTime: { value: number };
+  uAspect: { value: number };
+  uHaze: { value: THREE.Vector4 };
+  uFlash: { value: number };
+  uShaft: { value: THREE.Vector3 };
+  uShaftColor: { value: THREE.Color };
+}
+
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -93,6 +135,15 @@ export class Engine {
 
   /** Glow around anything brighter than white (sparks, sun, lights). Tuned per time of day. */
   readonly bloom: UnrealBloomPass;
+  /** Heat haze, lightning flash and sun shafts (output pass uniforms) */
+  readonly fx: ScreenFx = {
+    uTime: { value: 0 },
+    uAspect: { value: window.innerWidth / window.innerHeight },
+    uHaze: { value: new THREE.Vector4() },
+    uFlash: { value: 0 },
+    uShaft: { value: new THREE.Vector3() },
+    uShaftColor: { value: new THREE.Color(1, 0.85, 0.6) },
+  };
   /** Height of the low-res render target in pixels (for point-sprite sizing) */
   get renderHeight(): number { return this.renderTarget.height; }
 
@@ -201,7 +252,7 @@ export class Engine {
       uContrast: { value: 1 },
     };
     const quadMat = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: this.renderTarget.texture }, ...this.grade },
+      uniforms: { tDiffuse: { value: this.renderTarget.texture }, ...this.grade, ...this.fx },
       vertexShader: OUTPUT_VERTEX,
       fragmentShader: OUTPUT_FRAGMENT,
       depthTest: false,
@@ -332,6 +383,31 @@ export class Engine {
     this.forceFrame = true; // draw the real scene on the next frame
   }
 
+  /**
+   * Hit-stop: time almost freezes for `ms` milliseconds (the world runs at 3%
+   * speed), so a big moment like finishing a section lands with a jolt.
+   */
+  /** Slow motion for a dramatic moment: `scale` speed for `ms` of real time */
+  slowMo(ms: number, scale: number): void {
+    if (!this.hitStopEnabled) return;
+    this.slowUntil = performance.now() + ms;
+    this.slowScale = scale;
+  }
+  private slowUntil = 0;
+  private slowScale = 1;
+
+  hitStop(ms: number): void {
+    if (!this.hitStopEnabled) return;
+    this.hitStopUntil = Math.max(this.hitStopUntil, performance.now() + ms);
+  }
+  /** Off with "reduced motion" */
+  hitStopEnabled = true;
+  /** Game speed (accessibility): 1 = normal, 0.7 = slow. Scales every update's dt. */
+  timeScale = 1;
+  /** True while shaders compile after a job loads (the loading tip shows meanwhile) */
+  get isCompiling(): boolean { return this.compiling; }
+  private hitStopUntil = 0;
+
   /** Register a callback to be called every frame with delta time */
   onUpdate(callback: (dt: number) => void): void {
     this.updateCallbacks.push(callback);
@@ -352,7 +428,10 @@ export class Engine {
       if (time < this.nextFrameAt - 1) return;
       this.nextFrameAt = Math.max(this.nextFrameAt + interval, time - interval);
     }
-    const dt = this.clock.getDelta();
+    let dt = this.clock.getDelta();
+    dt *= this.timeScale;
+    if (performance.now() < this.hitStopUntil) dt *= 0.03;
+    else if (performance.now() < this.slowUntil) dt *= this.slowScale;
 
     // Call all registered update functions
     for (const cb of this.updateCallbacks) {
@@ -414,6 +493,7 @@ export class Engine {
 
     this.forceFrame = true; // resizing clears the canvas: draw one fresh frame
     this.camera.aspect = w / h;
+    this.fx.uAspect.value = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
 

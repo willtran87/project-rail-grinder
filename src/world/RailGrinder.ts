@@ -57,11 +57,88 @@ export class RailGrinder {
       lens: new THREE.MeshStandardMaterial({ color: 0x44aa66, emissive: 0x22aa44, emissiveIntensity: 0.3 }),
     };
 
+    this.bodyTex = bodyTex;
     this.buildCab(-42); this.buildWater(-26); this.buildGrind(-12); this.buildGrind(0);
     this.buildGrind(12); this.buildGrind(24); this.buildWater(38); this.buildGen(52); this.buildCrew(67);
   }
 
   setGrinding(a: boolean) { this._grinding = a; }
+
+  private bodyTex: THREE.Texture | null = null;
+
+  /** Repaint the consist (career → paint schemes) */
+  setLivery(bodyHex: string, trim: number): void {
+    const body = this.m.body as THREE.MeshStandardMaterial;
+    const tex = createTrainBodyTexture(bodyHex, 512, 256, {});
+    this.bodyTex?.dispose();
+    this.bodyTex = tex;
+    body.map = tex;
+    body.color.set(bodyHex);
+    (this.m.bodyDk as THREE.MeshStandardMaterial).color.setHex(trim);
+  }
+
+  /** Extra parts that show which upgrades you've bought (built on first use) */
+  private upgradeParts: Record<string, THREE.Object3D[][]> | null = null;
+
+  /**
+   * Show the bought upgrades on the consist:
+   *   cooling     - radiator units on the water cars' roofs (one per level)
+   *   compound    - orange "hard-cut" stripes along the grinding cars
+   *   wideStones  - hazard-striped skirt plates by the stones
+   */
+  setUpgrades(levels: { cooling: number; compound: number; wideStones: number }): void {
+    this.upgradeParts ??= this.buildUpgradeParts();
+    for (const [id, parts] of Object.entries(this.upgradeParts)) {
+      const level = levels[id as keyof typeof levels] ?? 0;
+      parts.forEach((levelParts, i) => levelParts.forEach((p) => { p.visible = i < level; }));
+    }
+  }
+
+  private buildUpgradeParts(): Record<string, THREE.Object3D[][]> {
+    const make = (car: THREE.Group, fill: (g: THREE.Group) => void) => {
+      const g = new THREE.Group();
+      fill(g);
+      bakeStatic(g, { vertexMaterial: this.vertexMat });
+      g.visible = false;
+      car.add(g);
+      return g;
+    };
+    const water = [this.cars[1].group, this.cars[6].group];
+    const grind = [2, 3, 4, 5].map((i) => this.cars[i].group);
+    // One list of parts (one per car) for each level of each upgrade
+    const cooling: THREE.Object3D[][] = [], compound: THREE.Object3D[][] = [], wide: THREE.Object3D[][] = [];
+    for (let level = 0; level < 3; level++) {
+      const z = -3 + level * 3;
+      const radiator: THREE.Object3D[] = [];
+      for (const car of water) {
+        radiator.push(make(car, (g) => {
+          this.B(g, 1.3, 0.32, 1.1, this.m.fmid, 0, 3.95, z);
+          this.C(g, 0.38, 0.38, 0.06, 14, this.m.frame, 0, 4.13, z);
+          this.C(g, 0.06, 0.06, 0.08, 8, this.m.pipe, 0, 4.18, z);
+        }));
+      }
+      cooling.push(radiator);
+
+      const stripe: THREE.Object3D[] = [];
+      for (const car of grind) {
+        stripe.push(make(car, (g) => {
+          for (const s of [-1, 1]) this.B(g, 0.03, 0.07, 9, this.m.orange, s * 1.56, 1.75 - level * 0.12, 0);
+        }));
+      }
+      compound.push(stripe);
+
+      const skirt: THREE.Object3D[] = [];
+      for (const car of grind) {
+        skirt.push(make(car, (g) => {
+          for (const s of [-1, 1]) for (let k = 0; k < 4; k++) {
+            this.B(g, 0.04, 0.22, 0.5, (k + level) % 2 ? this.m.frame : this.m.orange, s * 1.62, 0.62, -3.6 + level * 0.6 + k * 2.2);
+          }
+        }));
+      }
+      wide.push(skirt);
+    }
+    return { cooling, compound, wideStones: wide };
+  }
   /**
    * @param darkness - 0 (day) .. 1 (night): beacons flash brighter in the dark
    */
@@ -213,7 +290,8 @@ export class RailGrinder {
       // ~15 plain paint/metal materials → one draw call per car
       vertexMaterial: this.vertexMat,
       // headlights and beacons change brightness every frame: keep their materials
-      animated: new Set<THREE.Material>([this.m.hl, this.m.beacon]),
+      // (and the trim colour changes with the paint scheme)
+      animated: new Set<THREE.Material>([this.m.hl, this.m.beacon, this.m.bodyDk]),
       // all shadows from one shadow-only mesh per car
       shadowProxy: true,
     });
@@ -346,6 +424,11 @@ export class RailGrinder {
       const z = -4.5 + i * 1.3;
       const mod = this.B(modules, 2.0, 0.3, 0.9, this.m.fmid, 0, 1.2, z);
       mod.castShadow = false; // inside the body: its shadow could never be seen
+      // Up close (camera 5): a stone and its motor shaft over each rail
+      for (const s of [-1, 1]) {
+        this.C(modules, 0.2, 0.2, 0.09, 12, this.m.fmid, s * 0.74, 1.0, z);
+        this.C(modules, 0.05, 0.05, 0.25, 6, this.m.pipe, s * 0.74, 1.15, z);
+      }
       this.C(g, 0.12, 0.12, 0.7, 12, this.m.pipe, 0, 0.95, z, 0, Math.PI / 2);
     }
     bakeStatic(modules, { vertexMaterial: this.vertexMat });

@@ -10,8 +10,10 @@ src/
 │   ├── Engine.ts            # Three.js renderer, scene, camera, pixel-art pipeline
 │   ├── InputManager.ts      # Keyboard and mouse state tracking
 │   ├── EventBus.ts          # Simple pub/sub for decoupled communication
-│   ├── CameraController.ts  # Camera views (1-5), screen shake, inspection cinematic
-│   ├── storage.ts           # Safe localStorage wrapper (never throws)
+│   ├── CameraController.ts  # Camera views (1-6, 6 = director cuts), shake, punch, inspection + vista
+│   ├── settings.ts          # Player settings (volumes, accessibility, grind mode, keymap…) + change events
+│   ├── keymap.ts            # Rebindable keys: physical key → action lookup, presets
+│   ├── storage.ts           # Safe localStorage wrapper (never throws) + save export/import
 │   ├── quality.ts           # Graphics quality presets (key G)
 │   ├── bakeStatic.ts        # Merges a model's fixed parts into one mesh per material
 │   ├── performance.test.ts  # Tests for the merging, batched rails and track lookup
@@ -21,6 +23,15 @@ src/
 │   ├── sectionMetrics.ts    # Accuracy/deviation of a whole 20m section
 │   ├── progress.ts          # Personal bests per job (saved in localStorage)
 │   ├── career.ts            # Money, upgrades, unlocks (career mode)
+│   ├── defects.ts           # The five damage kinds, seeded per job and region
+│   ├── scoring.ts           # Perfect pass, combo multiplier, section bonus, job grade
+│   ├── routes.ts            # Generated routes: random contracts + the daily contract
+│   ├── meta.ts              # Grades/medals, route condition, ghost, leaderboard, stats, liveries
+│   ├── achievements.ts      # 18 achievements and their checks
+│   ├── story.ts             # Dispatcher story beats by career progress
+│   ├── lessons.ts           # Staged tutorial: one new mechanic per early job
+│   ├── depth.ts             # Track classes, curves, stone grades, grind plan, weather, regrowth, emergencies, long haul
+│   ├── engage.ts            # Modifiers, weekly challenge, ranks, depot, museum, photo challenges, login, savers, next goal
 │   └── *.test.ts            # Tests for the above (npm test)
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
@@ -43,11 +54,17 @@ src/
 │   ├── ConsistLights.ts     # Headlight spot + visible beam, fades in with darkness
 │   ├── trackBed.ts          # Gravel texture + sloped ballast geometry (shared)
 │   ├── Weather.ts           # Rain streaks / snow + per-route climate "director"
+│   ├── Seasons.ts           # Season looks + cloud-shadow shader patch for the ground
+│   ├── Wildlife.ts          # Birds and deer that scatter from the consist (2 instanced draws)
+│   ├── LinesideFire.ts      # Grass fire + water-car spray
+│   ├── TrackCrews.ts        # Work crews (speed limit) and broken rail (stop + weld)
+│   ├── Atmos.ts             # Puddles, drips, town lights, aircraft, tumbleweeds, frost, wind sway
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
 │   ├── GrindEffects.ts      # Sparks + dust + work lights + contact glow, per frame
 │   ├── DustSystem.ts        # Billowing grinding-dust puffs (custom point shader)
 │   ├── SparkSystem.ts       # Grinding sparks drawn as glowing streaks (800 max)
+│   ├── GrindSpray.ts        # Ballast chips + water mist under the stones (2 point clouds)
 │   └── GrindContact.ts      # Glowing contact point and ground trail
 ├── audio/
 │   ├── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
@@ -63,7 +80,12 @@ src/
 │   ├── RadioDispatch.ts     # Periodic dispatch messages
 │   ├── InspectionReport.ts  # Pre/post job reports with RQI
 │   ├── JobSelect.ts         # Job selection screen with US map
-│   └── GuidedTutorial.ts    # Interactive onboarding (teaches by doing)
+│   ├── GuidedTutorial.ts    # Interactive onboarding (teaches by doing)
+│   ├── SettingsMenu.ts      # Settings / controls / how-to-play (key H)
+│   ├── Hints.ts             # Contextual control hints that retire once learned
+│   ├── Toast.ts             # Achievement / new-paint notices
+│   ├── TouchControls.ts     # On-screen sticks and buttons (touch screens only)
+│   └── ShareCard.ts         # Results image for sharing (clipboard or PNG)
 └── types/
     └── rail.ts              # Shared type definitions
 ```
@@ -206,6 +228,23 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 - **Tests for the performance work** (`core/performance.test.ts`): merged meshes keep their place and shadow rules, the lookup table matches the spline to under 1 mm, and grinding rewrites only one segment's slice of the rail buffer.
 - **Tests for the world logic**: `world/Landmarks.test.ts` covers the crossing car. `world/livingWorld.test.ts` covers time-of-day blending, the weather director, freight speed and slow-order braking. These are pure functions, so they need no browser.
 - **Hot rail** (`RailSegment.heatUp`): `Game.handleGrinding` heats the segments under each grinding car; they cool in `update()` over ~3.5 s.
+
+### Game Feel, Progression and Job Events
+- **Scoring** (`game/scoring.ts`, `game/defects.ts`): every section gets a damage kind (seeded by job, weighted by region) with its own ideal aim/pressure; `Game.completeSegment` decides perfect passes and feeds the `Combo`. Hit-stop (`Engine.hitStop`), camera punch, fanfares and spark fountains scale with how well the section went.
+- **Meta** (`game/meta.ts`, `achievements.ts`, `story.ts`): everything after a job happens in `Game.afterJobProgress` — stats, daily streak, route condition, grade + medal, ghost, achievements, new liveries. All saved with `core/storage`.
+- **Job events** (`Game.buildJobEvents` / `updateJobEvents`): crews, broken rail, fire, stone wear, the train hold, new-damage cards. Which are on comes from `featuresFor(jobsDone)` in `game/lessons.ts`.
+- **Screen effects** (`Engine.fx`, set in `Game.updateScreenFx`): heat haze (UV wobble around the projected stones, smaller with distance), lightning flash, and sun shafts (a 20-sample radial smear of HDR-bright sky toward the sun) all run in the existing output pass — no extra render passes.
+- **World looks** (`Game.updateWorldFx`): wetness (ground + ballast darker, ballast glossier), cloud shadows (noise in the ground's fragment shader), season (Environment recolours deciduous canopies per instance and tints greens; pines are `userData.evergreen`).
+
+### Depth and Engagement (round 2)
+- **Target profile per route** (`depth.applyTemplate`): `Game.targetProfile.points` is rebuilt from the AREMA base each job. Removing metal raises y, so relief adds to the target's y.
+- **Curves** (`depth.curvePeaks`): `applyInitialDefects` measures each section's heading change (`sectionTurn`, + = left) and adds gauge-face wear to the outer rail and crown wear to the inner.
+- **Pre-job choices** (`InspectionReport.showPreJobReport` resolves `{ stone, plan }`): stone grade multiplies removal, heat and the section bonus; the plan pays `depth.planBonus` at the end.
+- **Engagement state** lives in `game/engage.ts` (all saved via `core/storage`). `Game.buildJobEvents` reads modifiers, rank perks, depot crew and machine at job start; `afterJobProgress` updates the session tally.
+- **Retry a section**: every rail profile is copied at job start (`startProfiles`); `retrySection` copies a section back and marks it practice (`practiced`), which skips the bonus and the combo.
+- **Keys**: `InputManager` translates every physical key through `buildLookup(settings.keymap)` before the game sees it, so game code always checks the default key names. Touch controls and the gamepad feed the same "virtual keys".
+- **Money for job events** (fines, close calls, holds) is in `EVENT_PAY` in `game/rules.ts`.
+- **Visual check**: `scripts/visual-check.mjs` seeds `Math.random`, freezes game time (`engine.timeScale = 0`) before each shot, and compares against `visual/baseline/` with a per-pixel tolerance.
 
 ### Career Mode
 `game/career.ts` is pure logic (no DOM): pay per contract from stars, upgrade prices and effects, and unlock checks from total career stars. `JobSelect` shows the balance, locks contracts and runs the upgrade shop; `Game` applies upgrade multipliers (heat, removal rate, stone width) when a job starts and pays out on completion. Balance numbers live in `career.ts` and `rules.ts`. Add `?unlock` to the URL to open every contract while testing.

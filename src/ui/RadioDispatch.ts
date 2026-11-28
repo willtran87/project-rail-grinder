@@ -81,6 +81,14 @@ export class RadioDispatch {
     }
   }
 
+  /** Play a specific message now (story beats); it stays up a little longer */
+  say(from: string, text: string): void {
+    this.messageEl.innerHTML = `<span style="color: #ffdd88;">[${from}]</span><br>"${text}"`;
+    this.container.style.opacity = '1';
+    this.visible = true;
+    this.timer = -4; // ~10 s on screen instead of 6
+  }
+
   private showNext(): void {
     const msg = MESSAGES[this.messageIndex % MESSAGES.length];
     this.messageIndex++;

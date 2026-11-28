@@ -24,7 +24,7 @@ import type { RailBatch } from './RailBatch';
 export const SEGMENT_LENGTH = 5;
 
 // Visual state colors
-const DAMAGED_COLOR = new THREE.Color(0x3a3530);      // dark rusty brown
+const DAMAGED_COLOR = new THREE.Color(0x4a3122);      // rusty brown (reads clearly against ground steel)
 const DAMAGED_EMISSIVE = new THREE.Color(0x331100);    // warm glow for damage
 const GRINDING_COLOR = new THREE.Color(0x887766);      // mid-transition warm gray
 const STEEL_COLOR = new THREE.Color(0xc8c8d0);         // bright polished steel
@@ -35,7 +35,7 @@ const FLASH_TIME = 0.6;                                 // seconds the completio
 
 // The polished running band: a thin bright strip along the top of the rail
 // where the wheels (and the grindstones) touch (drawn by RailBatch)
-const SHINE_BASE_GLOW = 0.35;
+const SHINE_BASE_GLOW = 0.5;
 const SHINE_EMISSIVE = new THREE.Color(0x9aa4b4);
 let grindMarkTexture: THREE.CanvasTexture | null = null;
 

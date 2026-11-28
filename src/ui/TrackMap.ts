@@ -16,6 +16,10 @@ export interface SegmentStatus {
   accuracy: number;
   completed: boolean;
   slowOrder?: boolean;     // true = speed restriction active
+  /** One-letter damage kind code (W/C/H/G/F), shown on unfinished sections */
+  kindCode?: string;
+  /** Stars earned (finished sections) */
+  stars?: number;
 }
 
 export class TrackMap {
@@ -37,16 +41,40 @@ export class TrackMap {
       transform: translateX(-50%);
       background: rgba(0, 0, 0, 0.85);
       border: 2px solid #555;
-      pointer-events: none;
+      pointer-events: auto; cursor: help;
       image-rendering: pixelated;
     `;
     document.body.appendChild(this.canvas);
+
+    // Hover a section for details (damage kind, estimated passes, accuracy)
+    this.tooltip = document.createElement('div');
+    this.tooltip.style.cssText = `position: absolute; z-index: 41; pointer-events: none; display: none;
+      background: rgba(0,0,0,0.88); border: 1px solid #555; border-radius: 4px; padding: 6px 9px;
+      font-family: var(--ui-mono, monospace); font-size: 10px; color: #ddd; white-space: nowrap;`;
+    document.body.appendChild(this.tooltip);
+    this.canvas.addEventListener('mousemove', (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      const x = (e.clientX - r.left) * (this.canvas.width / r.width);
+      const count = this.segments.length;
+      const i = Math.floor((x - 20) / ((this.canvas.width - 40) / Math.max(1, count)));
+      const html = i >= 0 && i < count && this.describe ? this.describe(i) : '';
+      if (!html) { this.tooltip.style.display = 'none'; return; }
+      this.tooltip.innerHTML = html;
+      this.tooltip.style.display = 'block';
+      this.tooltip.style.left = `${e.clientX + 12}px`;
+      this.tooltip.style.top = `${r.bottom + 6}px`;
+    });
+    this.canvas.addEventListener('mouseleave', () => { this.tooltip.style.display = 'none'; });
     this.ctx = this.canvas.getContext('2d')!;
   }
 
   // Redraw-on-change (see draw)
   private dirty = true;
   private lastKey = '';
+
+  private tooltip: HTMLElement;
+  /** Game fills this in: HTML describing section i (for the hover tooltip) */
+  describe: ((i: number) => string) | null = null;
 
   /** Initialize with segment count */
   init(segmentCount: number): void {
@@ -77,10 +105,11 @@ export class TrackMap {
   private visualKey(seg: SegmentStatus): string {
     const segW = (this.canvas.width - 40) / Math.max(1, this.segments.length);
     const progressPx = Math.round((segW - 2) * seg.grindProgress);
-    const colorBand = seg.completed ? 'done'
+    const colorBand = (seg.kindCode ?? '') + (seg.completed ? 'done'
       : seg.grindProgress > 0.01 ? (seg.accuracy > 0.8 ? 'g' : seg.accuracy > 0.5 ? 'm' : 'p')
-      : (seg.defectSeverity > 0.7 ? 's' : seg.defectSeverity > 0.4 ? 'o' : seg.defectSeverity > 0.1 ? 'l' : 'n');
-    return `${colorBand}|${progressPx}|${seg.completed}|${seg.slowOrder}`;
+      : (seg.defectSeverity > 0.7 ? 's' : seg.defectSeverity > 0.4 ? 'o' : seg.defectSeverity > 0.1 ? 'l' : 'n'));
+    const accPx = Math.round((segW - 2) * Math.min(1, seg.accuracy / 0.8));
+    return `${colorBand}|${progressPx}|${seg.completed}|${seg.slowOrder}|${accPx}|${seg.stars ?? 0}`;
   }
 
   /** Update grinder position (0-1 along track) */
@@ -95,6 +124,13 @@ export class TrackMap {
   /** Revenue train position (0-1 along track, -1 if not active) */
   private revenueTrainT: number = -1;
   setRevenueTrainPosition(t: number): void { this.revenueTrainT = t; }
+
+  /** Your best run's position (0..1), or -1 for none — drawn as a pale marker to race */
+  private ghostT = -1;
+  setGhostPosition(t: number): void {
+    if (Math.abs(t - this.ghostT) > 0.001) this.dirty = true;
+    this.ghostT = t;
+  }
 
   /**
    * Redraw the map — only when something visible changed: a section's state,
@@ -164,6 +200,22 @@ export class TrackMap {
       ctx.fillStyle = barColor;
       ctx.fillRect(x + 1, trackY - barH / 2, segW - 2, barH);
 
+      // Quality meter under the bar: fills toward the 80% finish line while you work on it
+      if (!seg.completed && seg.grindProgress > 0.01) {
+        const q = Math.min(1, seg.accuracy / 0.8);
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(x + 1, trackY + barH / 2 + 1, segW - 2, 3);
+        ctx.fillStyle = q >= 1 ? pal.mapDone : q > 0.6 ? pal.mapWorkMid : pal.mapWorkPoor;
+        ctx.fillRect(x + 1, trackY + barH / 2 + 1, (segW - 2) * q, 3);
+      }
+      // Finished: one gold pip per star
+      if (seg.completed && seg.stars) {
+        ctx.fillStyle = '#ffd84a';
+        for (let p = 0; p < seg.stars; p++) {
+          ctx.fillRect(x + segW / 2 - (seg.stars * 4) / 2 + p * 4, trackY - barH / 2 - 4, 3, 3);
+        }
+      }
+
       // Grind progress overlay (darker fill from left)
       if (seg.grindProgress > 0 && !seg.completed) {
         ctx.fillStyle = 'rgba(100, 200, 100, 0.3)';
@@ -184,6 +236,14 @@ export class TrackMap {
       } else if (seg.slowOrder) {
         ctx.fillStyle = '#ffcc00';
         ctx.fillText('SLOW', x + segW / 2, trackY + 3);
+      }
+      // Damage kind letter in the corner of unfinished sections
+      if (!seg.completed && seg.kindCode) {
+        ctx.font = 'bold 6px monospace';
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.textAlign = 'left';
+        ctx.fillText(seg.kindCode, x + 3, trackY - barH / 2 + 7);
+        ctx.textAlign = 'center';
       }
 
       // Segment number
@@ -229,6 +289,21 @@ export class TrackMap {
       }
     }
 
+    // Ghost: where your best run was at this point in time
+    if (this.ghostT >= 0 && this.ghostT <= 1) {
+      const gx = padding + this.ghostT * trackW;
+      ctx.fillStyle = 'rgba(200, 230, 255, 0.55)';
+      ctx.beginPath();
+      ctx.moveTo(gx, trackY + barH / 2 + 2);
+      ctx.lineTo(gx - 4, trackY + barH / 2 + 8);
+      ctx.lineTo(gx + 4, trackY + barH / 2 + 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = '6px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('BEST', gx, trackY + barH / 2 + 15);
+    }
+
     // Revenue train approaching (red triangle moving along the track)
     if (this.revenueTrainT >= 0 && this.revenueTrainT <= 1) {
       const rtX = padding + this.revenueTrainT * trackW;
@@ -261,5 +336,6 @@ export class TrackMap {
 
   dispose(): void {
     this.canvas.remove();
+    this.tooltip.remove();
   }
 }

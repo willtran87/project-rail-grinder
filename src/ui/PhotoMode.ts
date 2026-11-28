@@ -93,18 +93,53 @@ export class PhotoMode {
     this.target.y += 1.2; // look at the train body, not the ground
   }
 
+  /** Caption for saved photos (set by Game: route name, best grade …) */
+  stampText = '';
+  /** Called after a photo is saved (Game checks the photo challenges) */
+  onSaved: (() => void) | null = null;
+
+  /**
+   * Add a small caption strip to the bottom of a saved photo: the game name,
+   * the route and the date — so a shared shot says where it was taken.
+   */
+  private async stamp(blob: Blob): Promise<Blob> {
+    try {
+      const img = await createImageBitmap(blob);
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d')!;
+      g.drawImage(img, 0, 0);
+      const h = Math.max(22, Math.round(img.height * 0.035));
+      g.fillStyle = 'rgba(0,0,0,0.55)';
+      g.fillRect(0, img.height - h, img.width, h);
+      g.font = `bold ${Math.round(h * 0.5)}px monospace`;
+      g.textBaseline = 'middle';
+      g.fillStyle = '#ffcc55';
+      g.fillText('STAYING ON TRACK', h * 0.5, img.height - h / 2);
+      g.fillStyle = '#dddddd';
+      const right = `${this.stampText}${this.stampText ? '  ·  ' : ''}${new Date().toLocaleDateString()}`;
+      g.textAlign = 'right';
+      g.fillText(right, img.width - h * 0.5, img.height - h / 2);
+      return await new Promise<Blob>((res) => c.toBlob((b) => res(b ?? blob), 'image/png'));
+    } catch {
+      return blob; // stamping is a nicety: never lose the photo over it
+    }
+  }
+
   /** Grab the next frame (HUD-free) and download it as a PNG */
   private async savePhoto(): Promise<void> {
     this.hint.style.display = 'none'; // the hint is HTML, not in the canvas — but hide anyway for clarity
-    const blob = await this.engine.captureFrame();
+    const raw = await this.engine.captureFrame();
     if (this.active) this.hint.style.display = 'block';
-    if (!blob) return;
+    if (!raw) return;
+    const blob = await this.stamp(raw);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     a.href = url;
     a.download = `staying-on-track-${stamp}.png`;
     a.click();
+    this.onSaved?.();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 }

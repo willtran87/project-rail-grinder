@@ -48,12 +48,17 @@
       body.cinematic #profile-container,
       body.cinematic #track-map,
       body.cinematic #radio-dispatch,
-      body.cinematic #deadline-bar { display: none !important; }
+      body.cinematic #deadline-bar,
+      body.cinematic #combo-pill,
+      body.cinematic #event-pill,
+      body.cinematic #goal-line,
+      body.cinematic #kind-card { display: none !important; }
 
       /* ---- Photo mode: hide everything except the scene and the photo hint ---- */
       body.photo-mode #top-bar,
       body.photo-mode #profile-container,
       body.photo-mode #track-map,
+      body.photo-mode #combo-pill,
       body.photo-mode #radio-dispatch,
       body.photo-mode #deadline-bar,
       body.photo-mode #perf-overlay,
@@ -315,6 +320,10 @@
       display: flex; gap: 0; align-items: stretch;
       pointer-events: none; z-index: 5;
     ">
+      <!-- Kind of damage under the stones, and how to grind it (set by Game) -->
+      <div id="defect-hint" style="position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 4px;
+        white-space: nowrap; font-family: var(--ui-mono); font-size: 10px; color: #c8b890; text-shadow: 1px 1px 0 #000;">
+        <span id="defect-name" style="color: #ffcc55; font-weight: 700;"></span> <span id="defect-tip"></span></div>
       <!-- Left rail -->
       <div style="text-align: center;">
         <div id="left-rail-label" style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); letter-spacing: 1px; margin-bottom: 1px;">LEFT RAIL</div>
@@ -330,8 +339,12 @@
         <!-- no overflow:hidden: the fill is rounded itself, and clipping it to a rounded box made the GPU build a new drawing pipeline (a ~0.2 s stall) the moment heat first showed -->
         <div style="width: 6px; height: 56px; background: rgba(255,255,255,0.06); border-radius: 3px; position: relative;">
           <div id="heat-fill" style="position: absolute; bottom: 0; width: 100%; height: 0%; background: var(--ui-green); border-radius: 3px; transition: height 0.1s;"></div>
+          <!-- "Hot cut" zone (60–80%): stones cut 25% faster here, but past 80% they overheat -->
+          <div title="Hot cut: faster, but don't pass 80%" style="position: absolute; left: -3px; right: -3px; bottom: 60%; height: 20%; border-top: 1px solid #ff8a3d; border-bottom: 1px solid #ff8a3d; pointer-events: none;"></div>
         </div>
         <div id="heat-value" style="font-family: var(--ui-mono); font-size: 8px; color: var(--ui-dim);">0%</div>
+        <div title="Stone life: worn stones cut less. Stop and hold Z to change them." id="stone-life"
+          style="font-family: var(--ui-mono); font-size: 7px; color: var(--ui-dim); margin-top: 2px;">STONE 100%</div>
       </div>
       <!-- Right rail -->
       <div style="text-align: center;">
@@ -372,7 +385,9 @@
     ">
       <div style="text-align: center; font-family: var(--ui-font);">
         <div style="font-size: 24px; font-weight: 700; color: #fff; margin-bottom: 8px;">PAUSED</div>
-        <div style="font-size: 11px; color: var(--ui-dim); margin-bottom: 30px;">Press ESC to resume</div>
+        <div style="font-size: 11px; color: var(--ui-dim); margin-bottom: 18px;">Press ESC to resume</div>
+        <div id="pause-stats" style="display: grid; grid-template-columns: repeat(3, 130px); gap: 12px 18px; color: #fff;
+          margin: 0 auto 26px; justify-content: center; text-align: center;"></div>
         <div style="display: flex; flex-direction: column; gap: 10px; align-items: center;">
           <button id="pause-resume" style="
             background: var(--ui-accent); color: #000; border: none;
@@ -384,6 +399,16 @@
             font-family: var(--ui-font); font-size: 12px; font-weight: 500;
             padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
           ">RESTART JOB</button>
+          <button id="pause-settings" style="
+            background: rgba(255,255,255,0.08); color: var(--ui-text); border: 1px solid var(--ui-border);
+            font-family: var(--ui-font); font-size: 12px; font-weight: 500;
+            padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
+          ">SETTINGS</button>
+          <button id="pause-help" style="
+            background: rgba(255,255,255,0.08); color: var(--ui-text); border: 1px solid var(--ui-border);
+            font-family: var(--ui-font); font-size: 12px; font-weight: 500;
+            padding: 8px 40px; border-radius: 4px; cursor: pointer; width: 200px;
+          ">CONTROLS &amp; HELP</button>
           <button id="pause-quit" style="
             background: rgba(255,255,255,0.08); color: var(--ui-text); border: 1px solid var(--ui-border);
             font-family: var(--ui-font); font-size: 12px; font-weight: 500;
@@ -435,5 +460,31 @@
     <div id="results-screen"><div id="results-content"></div></div>
 
     <script type="module" src="/src/main.ts"></script>
+    <!-- Shown while a job loads: route name + a tip -->
+    <div id="loading-tip" style="position: absolute; left: 50%; top: 42%; transform: translateX(-50%); z-index: 30;
+      text-align: center; font-family: var(--ui-font); color: #ddd; pointer-events: none; opacity: 0; transition: opacity 0.4s;
+      background: rgba(0,0,0,0.7); padding: 14px 26px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); max-width: 520px;">
+      <div id="loading-route" style="font-family: 'Press Start 2P', monospace; font-size: 11px; color: #ffcc55; margin-bottom: 8px;"></div>
+      <div id="loading-text" style="font-size: 12px; line-height: 1.5;"></div>
+    </div>
+    <!-- The closest unlock (next goal), under the combo pill -->
+    <div id="goal-line" style="position: absolute; bottom: 16px; left: 16px; z-index: 20; font-family: var(--ui-font); font-size: 11px;
+      color: #ffcc77; background: rgba(16,19,28,0.6); border-radius: 10px; padding: 3px 10px; pointer-events: none;"></div>
+    <!-- Events that need the player: fire, broken rail, work zone, hold offer -->
+    <div id="event-pill" style="position: absolute; top: 96px; left: 50%; transform: translateX(-50%); z-index: 20;
+      font-family: var(--ui-font); font-size: 13px; font-weight: 600; color: #fff; background: rgba(150,30,10,0.85);
+      border: 1px solid rgba(255,120,80,0.6); border-radius: 16px; padding: 6px 16px; pointer-events: none;
+      opacity: 0; transition: opacity 0.25s; white-space: nowrap;"></div>
+    <!-- First time you meet a kind of damage: what it is and how to grind it -->
+    <div id="kind-card" style="position: absolute; top: 140px; right: 20px; z-index: 21; width: 260px; pointer-events: none;
+      font-family: var(--ui-font); color: #eee; background: rgba(16,19,28,0.92); border: 1px solid rgba(255,200,80,0.5);
+      border-radius: 8px; padding: 12px 14px; opacity: 0; transition: opacity 0.4s;"></div>
+    <!-- Combo streak (shown from 2 three-star sections in a row) -->
+    <div id="combo-pill" style="position: absolute; top: 74px; left: 50%; transform: translateX(-50%); z-index: 20;
+      font-family: 'Press Start 2P', monospace; font-size: 11px; color: #ffaa00; opacity: 0; transition: opacity 0.25s;
+      text-shadow: 0 0 6px rgba(255,170,0,0.6), 1px 1px 0 #000; pointer-events: none; will-change: transform, opacity;"></div>
+    <!-- Red edge flash on over-grind -->
+    <div id="overgrind-vignette" style="position: fixed; inset: 0; z-index: 14; pointer-events: none; opacity: 0;
+      background: radial-gradient(ellipse at center, rgba(255,0,40,0) 55%, rgba(255,0,40,0.55) 100%); will-change: opacity;"></div>
   </body>
 </html>
