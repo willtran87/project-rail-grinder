@@ -19,7 +19,7 @@
 
 import * as THREE from 'three';
 import { RailProfile } from './RailProfile';
-import type { RailBatch } from './RailBatch';
+import { RailBatch } from './RailBatch';
 
 export const SEGMENT_LENGTH = 5;
 
@@ -103,6 +103,12 @@ export class RailSegment {
   private shineIntensity = SHINE_BASE_GLOW;
   private shineOpacity = 0;
 
+  /** Damage kind code (see RailBatch.setSurface) shown as marks on the head */
+  private damageKind = 0;
+  /** The running band across its strip: centre and half-width (0..1) */
+  private bandCenter = 0.5;
+  private bandHalf = 0.5;
+
   // The rail's "normal" glow for its grind state; heat glow is added on top
   private baseEmissive = new THREE.Color();
   private baseEmissiveIntensity = 0;
@@ -117,7 +123,33 @@ export class RailSegment {
     this.batch = batch;
     this.slot = slot;
     this.batch.writeGeometry(slot, profile);
+    this.measureBand(profile);
     this.commit();
+  }
+
+  /** What kind of damage marks this stretch of rail shows (0 = none) */
+  setDamageKind(kind: number): void {
+    this.damageKind = kind;
+    this.commit();
+  }
+
+  /**
+   * The running band: the highest part of the head, where the wheels ride.
+   * Points within 0.05 mm of the top count. A good profile gives a narrow
+   * band on the crown; a flattened or lopsided one a wide or off-centre band.
+   */
+  private measureBand(profile: RailProfile): void {
+    const pts = profile.points;
+    let top = Infinity;
+    for (const p of pts) if (Math.abs(p.x) < 30 && p.y < top) top = p.y; // larger y = lower surface
+    let lo = Infinity, hi = -Infinity;
+    for (const p of pts) {
+      if (Math.abs(p.x) < 30 && p.y <= top + 0.05) { lo = Math.min(lo, p.x); hi = Math.max(hi, p.x); }
+    }
+    if (lo > hi) { this.bandCenter = 0.5; this.bandHalf = 0.5; return; }
+    const strip = RailBatch.BAND_STRIP_MM;
+    this.bandCenter = Math.max(0, Math.min(1, ((lo + hi) / 2) / strip + 0.5));
+    this.bandHalf = Math.max(0.12, Math.min(0.5, ((hi - lo) / 2 + 2) / strip));
   }
 
   get grindProgress(): number { return this._grindProgress; }
@@ -224,6 +256,9 @@ export class RailSegment {
   /** Rebuild the 3D rail from the (ground) profile — in place, inside the batch */
   setProfile(profile: RailProfile): void {
     this.batch.writeGeometry(this.slot, profile);
+    const c = this.bandCenter, h = this.bandHalf;
+    this.measureBand(profile);
+    if (c !== this.bandCenter || h !== this.bandHalf) this.commit();
   }
 
   /** Send the current look to the batch */
@@ -231,6 +266,10 @@ export class RailSegment {
     this.batch.setLook(this.slot, this.color, this.metalness,
       this.emissive, this.emissiveIntensity, this.roughness,
       this.shineEmissive, this.shineIntensity, this.shineOpacity);
+    // Damage marks fade as the section is ground clean
+    this.batch.setSurface(this.slot, this.damageKind,
+      this._defectSeverity > 0 ? Math.min(1, 0.35 + this._defectSeverity) * (1 - this._grindProgress) : 0,
+      this.bandCenter, this.bandHalf);
   }
 
   /** Nothing to free: the batch owns all GPU resources */

@@ -135,7 +135,7 @@ export class Atmos {
     this.group.add(this.plane);
 
     // ---- Tumbleweeds on the prairie ----
-    if (region === 'prairie') {
+    if (region === 'prairie' || region === 'desert') {
       const geo = new THREE.IcosahedronGeometry(0.45, 1);
       this.weeds = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0x9a7a48, wireframe: true }), WEEDS);
       this.weeds.frustumCulled = false;

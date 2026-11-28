@@ -27,4 +27,4 @@ export interface ProfileDeviation {
  * The kind of place a job is set in. Drives the landmarks, the weather
  * (climate) and the background sounds for that route.
  */
-export type Region = 'prairie' | 'mountain' | 'city' | 'coast';
+export type Region = 'prairie' | 'mountain' | 'city' | 'coast' | 'desert' | 'forest' | 'appalachia';

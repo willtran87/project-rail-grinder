@@ -34,6 +34,8 @@ export class GrindEffects {
   private dust: DustSystem;
   /** 0..1 stone heat, set by Game each frame (hotter = longer, brighter sparks) */
   stoneHeat = 0;
+  /** 0..1 how hot the combo is: thicker, brighter, longer sparks */
+  comboBoost = 0;
   /** 0..1 multiplier on dust emission (graphics quality setting) */
   dustAmount = 1;
   private _dustOrigin = new THREE.Vector3();
@@ -178,7 +180,8 @@ export class GrindEffects {
         ep.right.copy(tp.right);
       }
     }
-    this.sparks.setEmitPoints(this.emitPool, avgPressure / 50 * (this.sparkMode === 'off' ? 0.5 : 1), this.stoneHeat);
+    this.sparks.setEmitPoints(this.emitPool, avgPressure / 50 * (this.sparkMode === 'off' ? 0.5 : 1) * (1 + this.comboBoost * 0.9),
+      Math.max(this.stoneHeat, this.comboBoost * 0.7));
     this.sparks.mode = this.sparkMode;
 
     // Dust: each grinding car occasionally puffs a cloud off each rail.

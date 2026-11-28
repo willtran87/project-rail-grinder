@@ -9,9 +9,29 @@
  */
 
 import { Game } from './Game';
+import { JobSelect } from './ui/JobSelect';
+import { loadStats } from './game/meta';
 
 const titleScreen = document.getElementById('title-screen')!;
 const FADE_MS = 500;
+
+// CONTINUE: a returning player goes straight into the contract we'd suggest
+// (the same one as the UP NEXT card on the job menu)
+let continueJob: ReturnType<typeof JobSelect.recommend>['job'] | null = null;
+try {
+  if (loadStats().jobs > 0) {
+    const rec = JobSelect.recommend();
+    const btn = document.getElementById('title-continue');
+    const label = document.getElementById('title-continue-job');
+    const start = document.getElementById('title-start');
+    if (btn && label) {
+      label.textContent = `${rec.job.name.split(' — ')[0]} · ${rec.why}`;
+      btn.style.display = 'block';
+      if (start) start.textContent = 'OR CLICK ANYWHERE FOR THE JOB MENU';
+      btn.addEventListener('click', () => { continueJob = rec.job; });
+    }
+  }
+} catch { /* storage blocked: no continue button */ }
 
 titleScreen.addEventListener('click', () => {
   const clickedAt = performance.now();
@@ -28,7 +48,7 @@ titleScreen.addEventListener('click', () => {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     try {
       console.log('[STAYING ON TRACK] Starting game...');
-      const game = new Game(audioContext);
+      const game = new Game(audioContext, continueJob ?? undefined);
       (window as unknown as Record<string, unknown>).game = game;
     } catch (e) {
       console.error('[STAYING ON TRACK] Failed to start:', e);

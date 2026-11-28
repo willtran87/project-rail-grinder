@@ -14,6 +14,7 @@
  */
 
 import { nextGoal } from './engage';
+import { loadCustomPaint, EVENTS, loadEventRewards } from './loop';
 import { loadJSON, saveJSON } from '../core/storage';
 import type { Grade } from './scoring';
 import { loadRecords } from './progress';
@@ -31,10 +32,13 @@ export function betterGrade(a: Grade | undefined, b: Grade): Grade {
 }
 
 export type Medal = 'gold' | 'silver' | 'bronze' | null;
-/** Medal for finishing time: seconds per section (gold < 25 s, silver < 35 s, bronze < 50 s) */
+/**
+ * Medal for finishing time: seconds per section (gold < 30 s, silver < 42 s,
+ * bronze < 60 s). Set from the play-test: a steady player runs ~40-45 s a section.
+ */
 export function timeMedal(seconds: number, sections: number): Medal {
   const per = seconds / Math.max(1, sections);
-  return per < 25 ? 'gold' : per < 35 ? 'silver' : per < 50 ? 'bronze' : null;
+  return per < 30 ? 'gold' : per < 42 ? 'silver' : per < 60 ? 'bronze' : null;
 }
 export const MEDAL_ICON: Record<Exclude<Medal, null>, string> = { gold: '🥇', silver: '🥈', bronze: '🥉' };
 
@@ -221,6 +225,12 @@ export function liveryProgress() {
 const LIVERY_KEY = 'livery-v1';
 export function selectedLivery(): Livery {
   const id = loadJSON<string>(LIVERY_KEY, 'safety');
+  if (id === 'custom') {
+    const c = loadCustomPaint();
+    return { id: 'custom', name: 'Custom', body: c.body, trim: parseInt(c.trim.slice(1), 16), unlockText: '', unlocked: () => true };
+  }
+  const ev = EVENTS.find((e) => e.livery.id === id);
+  if (ev && loadEventRewards().includes(id)) return { ...ev.livery, unlockText: ev.name, unlocked: () => true };
   return LIVERIES.find((l) => l.id === id) ?? LIVERIES[0];
 }
 export function selectLivery(id: string): void { saveJSON(LIVERY_KEY, id); }

@@ -32,6 +32,9 @@ src/
 │   ├── lessons.ts           # Staged tutorial: one new mechanic per early job
 │   ├── depth.ts             # Track classes, curves, stone grades, grind plan, weather, regrowth, emergencies, long haul
 │   ├── engage.ts            # Modifiers, weekly challenge, ranks, depot, museum, photo challenges, login, savers, next goal
+│   ├── ops.ts               # Customers, mid-job stone grades, mirror finish, machine faults, hazard numbers
+│   ├── coach.ts             # Live coaching tips that retire once learned
+│   ├── loop.ts              # Seasonal events, route mastery, route codes, bounties, badges, weekly ladder, custom paint
 │   └── *.test.ts            # Tests for the above (npm test)
 ├── rail/
 │   ├── RailProfile.ts       # 2D cross-section curve — the core data model
@@ -59,6 +62,11 @@ src/
 │   ├── LinesideFire.ts      # Grass fire + water-car spray
 │   ├── TrackCrews.ts        # Work crews (speed limit) and broken rail (stop + weld)
 │   ├── Atmos.ts             # Puddles, drips, town lights, aircraft, tumbleweeds, frost, wind sway
+│   ├── Structures.ts        # Truss / girder bridges over rivers, tunnels (dim light, echo, no rain)
+│   ├── TrackDetail.ts       # Tie plates, clips, weld collars around the consist (2 instanced draws)
+│   ├── Bystanders.ts        # Railfans, a station platform, waving kids (3 draws)
+│   ├── Hazards.ts           # Switches (lift the stones) and the quiet zone
+│   ├── DamageOverlay.ts     # Key B: scanned damage painted on the track
 │   └── ProceduralTextures.ts # Canvas-based textures for train bodies and ground
 ├── effects/
 │   ├── GrindEffects.ts      # Sparks + dust + work lights + contact glow, per frame
@@ -69,6 +77,7 @@ src/
 ├── audio/
 │   ├── AudioManager.ts      # Web Audio API — grinding, diesel, clicks, alarms
 │   ├── glide.ts             # Smooth, rate-limited sound parameter changes (no audio-engine flooding)
+│   ├── Music.ts             # Procedural adaptive score (pad, pulse, ticks, arpeggio, sting)
 │   └── Ambience.ts          # Per-route background sounds + crossing bell
 ├── ui/
 │   ├── TrackMap.ts           # Top-of-screen track progress strip
@@ -85,6 +94,7 @@ src/
 │   ├── Hints.ts             # Contextual control hints that retire once learned
 │   ├── Toast.ts             # Achievement / new-paint notices
 │   ├── TouchControls.ts     # On-screen sticks and buttons (touch screens only)
+│   ├── CabView.ts           # Camera 3: window frame, wipers, dashboard gauges, grind monitor
 │   └── ShareCard.ts         # Results image for sharing (clipboard or PNG)
 └── types/
     └── rail.ts              # Shared type definitions
@@ -245,6 +255,15 @@ Add the location to `JOB_LOCATIONS` with real longitude/latitude for the US map 
 - **Keys**: `InputManager` translates every physical key through `buildLookup(settings.keymap)` before the game sees it, so game code always checks the default key names. Touch controls and the gamepad feed the same "virtual keys".
 - **Money for job events** (fines, close calls, holds) is in `EVENT_PAY` in `game/rules.ts`.
 - **Visual check**: `scripts/visual-check.mjs` seeds `Math.random`, freezes game time (`engine.timeScale = 0`) before each shot, and compares against `visual/baseline/` with a per-pixel tolerance.
+
+### Round 3: play-test, feel, depth, loop
+- **Play-test bot** (`scripts/playtest.mjs`, `npm run playtest`): installs a "brain" with `engine.onUpdate` that drives the virtual keys (`input.isKeyDown` / `wasKeyPressed` are replaced), and wraps `floatingScore.show`, `toast.show`, `showCard`, `radioDispatch.say` and `setEvent` to log every message. Vite runs with `hmr: false` (a dependency-optimisation reload used to swap the page mid-run).
+- **Fixes it found**: over-ground points within 3× tolerance now count for completion (`OVERGRIND_ALLOWANCE` in `RailProfile`), a section with nothing left above the target is signed off at 1★ (`checkSignOff`, `sectionHasExcess`), the end-of-track brake no longer traps the consist, the stones lift at the end of the track, `findWorstZones` compares signed peaks (humps next to over-ground dips used to be hidden), welding starts when you stop anywhere within 70 m, slow orders are really 10 mph, regrowth is capped (`REGROWTH_MAX`), pass estimates use the deepest hump, stone wear and removal were rebalanced, and work-crew zones shrank.
+- **Messages**: `FloatingScore` stacks messages in one column (max 3, a short queue, `'low'` priority tips are dropped when busy). A finished section is one `banner()` with a "what's next" footer (`Game.nextNudge`: combo step, bounty, or route RQI toward the next job star).
+- **Rail surface**: `RailBatch` has a 4th data row per segment (damage kind, strength, running-band centre and half-width). The rail shader draws damage marks from local coordinates (`aLoc` attribute); the shine strip discards outside the band, which `RailSegment.measureBand` takes from the profile's highest points.
+- **Per-job world objects** (`Structures`, `TrackDetail`, `Bystanders`, `Hazards`, `DamageOverlay`) are built in `buildWorld` before the environment, so trees keep off them, and are disposed on the next build. Each is one or two draw calls.
+- **Feel**: `Music` runs on the audio clock (scheduled 0.25 s ahead); `Game.updateFeel` sets its level, the spark/sound combo boost, the warm edge glow and the heat rumble. `CameraController.startReplay` is the close-call shot; the camera leans with track curvature and pulls back with speed.
+- **New regions** (`desert`, `forest`, `appalachia`): every `Record<Region, …>` has an entry (climate, ambience, defect weights, route names, structures, colour look, landmarks), so adding another region is a type-checked checklist.
 
 ### Career Mode
 `game/career.ts` is pure logic (no DOM): pay per contract from stars, upgrade prices and effects, and unlock checks from total career stars. `JobSelect` shows the balance, locks contracts and runs the upgrade shop; `Game` applies upgrade multipliers (heat, removal rate, stone width) when a job starts and pays out on completion. Balance numbers live in `career.ts` and `rules.ts`. Add `?unlock` to the URL to open every contract while testing.

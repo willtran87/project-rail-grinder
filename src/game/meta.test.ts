@@ -43,10 +43,10 @@ describe('grades, medals, conditions', () => {
     expect(betterGrade('A', 'C')).toBe('A');
   });
   it('medals by time per section', () => {
-    expect(timeMedal(20 * 10, 10)).toBe('gold');
-    expect(timeMedal(30 * 10, 10)).toBe('silver');
-    expect(timeMedal(45 * 10, 10)).toBe('bronze');
-    expect(timeMedal(60 * 10, 10)).toBeNull();
+    expect(timeMedal(25 * 10, 10)).toBe('gold');
+    expect(timeMedal(35 * 10, 10)).toBe('silver');
+    expect(timeMedal(50 * 10, 10)).toBe('bronze');
+    expect(timeMedal(65 * 10, 10)).toBeNull();
   });
   it('a route wears while you work elsewhere, and a worn route is damaged worse', () => {
     updateRouteConditions('kansas', 95);

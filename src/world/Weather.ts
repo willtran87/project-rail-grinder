@@ -49,6 +49,12 @@ export const CLIMATES: Record<Region, Climate> = {
   city:     { precip: 'rain', showerChance: 0.4,  cloudyChance: 0.6, maxIntensity: 0.6, startIntensity: 0,   snowCover: 0 },
   // California coast: marine-layer cloud, rarely rain
   coast:    { precip: 'rain', showerChance: 0.15, cloudyChance: 0.5, maxIntensity: 0.5, startIntensity: 0,   snowCover: 0 },
+  // Mojave: bone dry, the odd summer cloudburst
+  desert:   { precip: 'rain', showerChance: 0.07, cloudyChance: 0.15, maxIntensity: 0.7, startIntensity: 0,  snowCover: 0 },
+  // Cascades: drizzle and low cloud
+  forest:   { precip: 'rain', showerChance: 0.6,  cloudyChance: 0.75, maxIntensity: 0.7, startIntensity: 0.3, snowCover: 0 },
+  // Appalachia: showers and hazy hills
+  appalachia: { precip: 'rain', showerChance: 0.4, cloudyChance: 0.55, maxIntensity: 0.85, startIntensity: 0, snowCover: 0 },
 };
 
 const RAIN_COUNT = 2000;
@@ -247,6 +253,12 @@ export class Weather {
   }
 
   /** Key P: start showers if it's dry, clear up if it's wet */
+  /** Hold the weather at this strength for the whole job (Storm variants) */
+  force(intensity: number): void {
+    this.auto = false;
+    this.intensity = this.targetIntensity = Math.min(this.climate.maxIntensity, intensity);
+  }
+
   toggle(): void {
     if (this.targetIntensity > 0.05) {
       this.targetIntensity = 0;

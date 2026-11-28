@@ -29,8 +29,11 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | Z | Hold (stopped, stones up) to fit new stones when they're worn |
 | T | Ask dispatch to hold the revenue train 60 s (costs $500) |
 | Y | Right after an over-grind: retry that section from scratch (practice — it won't score) |
+| I | Pick the stone grade for the next change (coarse / standard / fine), then hold Z stopped to fit it |
+| Z | Also: hold (stopped) to repair a machine fault when one shows |
+| B | Damage scan: paint the scanned damage onto the track ahead (red / amber / green) |
 | **Camera & UI** | |
-| 1-6 | Camera angles (chase, side, cab, overview, grind close-up, 6 = director: cinematic cuts) |
+| 1-6 | Camera angles (chase, side, cab — with dashboard, gauges, grind monitor and wipers —, overview, grind close-up, 6 = director: cinematic cuts) |
 | H | Settings, controls and how-to-play (volumes, accessibility, UI size, game speed, **key rebinding**, save backup) |
 | V | Simple profile display (just the aim arrow and cues) |
 | N | Skip ahead to the next time of day (time also passes on its own) |
@@ -40,7 +43,7 @@ Open http://localhost:5173 in your browser. Click the title screen to start.
 | `` ` `` (backtick) | Toggle FPS / frame-time / draw-call counter |
 | F | Photo mode: drag or arrows to orbit, wheel or W/S to zoom, A/D to slide along the track, K to save a PNG, F or ESC to exit |
 | G | Graphics quality: High → Medium → Low (remembered; Medium and Low cap at 60 fps, Low also uses chunkier pixels) |
-| ESC | Pause menu (resume, restart, quit, controls list) |
+| ESC | Pause menu (resume, restart, quit, controls list, glossary) |
 | R | Restart current job |
 
 Keys can be rebound in Settings → Controls (there's a left-handed preset). On a phone or tablet, on-screen sticks and buttons appear.
@@ -123,12 +126,22 @@ The pre-grind report lets you pick a **stone grade** (coarse cuts fast but pays 
 - **Career & records page**: lifetime stats, best grades and medals, achievements (18), leaderboards, and paint schemes for the consist unlocked by your career (pick one there). Upgrades you buy show on the consist (radiators, stripes, skirts).
 - **Ghost**: your fastest run on each route races you on the track map.
 - **Route condition**: routes you keep in good shape come back with less damage; neglected ones get worse.
-- **Dispatcher story**: Marge, Teo and the crew of Grinder 17 have more to say as your career goes on.
+- **Dispatcher story**: Marge, Teo and the crew of Grinder 17 have more to say as your career goes on. The crew you hire have their own story arcs, and Marge remembers your milestones.
+- **Up next**: the job menu (and **CONTINUE** on the title screen) always suggests one contract to play, with the reason. The tabs are Contracts, More work, Shop (upgrades, crew and machines) and Career; `$` is spent in the Shop, `★` unlocks contracts and rank.
+- **First shifts**: a new player's first three contracts are short (4, 5 and 6 sections) with lighter damage.
+- **Customers**: each contract is for a heavy-haul railroad (wants RQI 90+), a commuter line (wants a silver time medal) or a scenic railroad (wants it quiet: moderate pressure, few over-grinds). Give them what they want for extra pay.
+- **Seasonal events**: Winter Storm Week, Spring Thaw, Heat Wave and Harvest Rush, each with a weekly themed route. 3★ on it earns that season's paint scheme and a museum find.
+- **Route mastery**: every finish adds its stars to that route's mastery level, unlocking a **Storm** variant, a **Hard** variant (+30% pay) and a master badge.
+- **Mastery badges**: night shift, no fast travel and speed run on each built-in route, each worth a career star.
+- **Weekly ladder**: three of your routes each week — beat your own best pay on each for $1,000 a rung, $3,000 and a streak saver for all three.
+- **Route codes**: every random route has a code (e.g. `RG-5K2J9Q-12`); type a friend's code to play exactly the same route. It's printed on the share card.
+- **Custom paint**: from rank Operator, pick your own body and trim colours, number and crew name (shown on the share card).
+- **Bounties**: on a roll, you may be offered a mid-job bounty (three 3★ sections in a row, or two perfect passes) for extra pay.
 - Progress is saved in your browser. For testing, add `?unlock` to the URL to open every contract.
 
 ## Jobs
 
-Four contracts based on real US railroad corridors:
+Seven contracts based on real US railroad corridors:
 
 | Contract | Difficulty | Base pay | Unlocks at |
 |----------|------------|----------|------------|
@@ -136,6 +149,11 @@ Four contracts based on real US railroad corridors:
 | **BNSF Hi-Line — Marias Pass** (Montana): mountain crossing at 5,213 ft, sharp curves, gauge face wear | Medium | $9,000 | ★3 |
 | **BRC Clearing Yard Approach** (Chicago): dense urban geometry, corrugation from stop-and-go traffic | Hard | $13,000 | ★7 |
 | **UP Coast Sub — Surf to SLO** (California): coastal curves beside an animated ocean, salt air corrosion | Expert | $18,000 | ★12 |
+| **BNSF Needles Sub — Mojave** (California/Arizona): desert straights past mesas and saguaros, heat-flattened crowns, fire risk | Hard | $15,000 | ★15 |
+| **BNSF Scenic Sub — Stevens Pass** (Washington): wet rail and tight curves through the firs, a sawmill and a tunnel | Expert | $20,000 | ★19 |
+| **NS Pocahontas District — Coal Line** (West Virginia): coal tipples, hoppers and twisting grades, corrugation everywhere | Expert | $22,000 | ★24 |
+
+Random routes can be any of the seven kinds of country.
 
 ## A Living World
 
@@ -154,6 +172,25 @@ Four contracts based on real US railroad corridors:
 - **More life**: puddles after rain and water dripping off the cars (snow blowing off them in winter), trees swaying in the wind and rain slanting with it, tumbleweeds on the prairie, frost glitter on mountain mornings, sea fog at dawn on the coast, a town glowing on the horizon at night and the odd aircraft blinking overhead.
 - **The last section** of a job finishes in a moment of slow motion.
 - **Sounds of the place:** birdsong or crickets on the prairie, wind and hawks in the mountains, traffic and horns in the city, surf and gulls on the coast, plus rain hiss.
+- **Bridges and tunnels**: steel truss and plate-girder bridges over rivers, and tunnels where the daylight drops away, the headlight takes over and everything echoes.
+- **Damage you can see**: corrugation ripples, head-check cracks at the gauge corner, flaking rust and worn edges on the rail head; the polished running band shows the shape you left (narrow and centred = good).
+- **The machine responds**: the stones tilt to your angle and lift when the pressure is off, hopping over each section joint.
+- **People**: railfans with cameras at the crossings, kids waving from a station platform, the work crew's hi-rail truck. Tie plates, clips and weld collars up close.
+- **Each route has its own colour**: a golden prairie, cold blue mountains, a sodium-orange city at night, teal coast, and the new desert, forest and Appalachian looks.
+- **Music** that builds with the play: a quiet pad while you travel, a pulse while you grind, an arpeggio once a combo is going, and a chime on a perfect pass.
+
+## Hazards and the machine
+
+- **Switches**: lift the stones over the points and frog (a yellow board stands 40 m before), or they strike it: worn stones, a fine and a broken combo.
+- **Quiet zones**: by the station at night, keep the pressure under 60% or there's a noise complaint. **Platforms** limit how far the stones can tilt.
+- **Machine faults** (after your first few jobs): a stone motor overheating or a hydraulic arm sticking. Stop and hold Z to repair it.
+- **Stone grades mid-job**: choose coarse stones for heavy damage and fine ones to finish. A section finished on fine stones, very accurately, is a **mirror finish** (extra pay).
+- **Lifting one stone**: pressure at 0 lifts that rail's stones, so you can finish one rail while the other still needs work.
+- **Live coaching**: a short tip when you make a mistake, retired for good once you've gone three sections without it.
+
+## Accessibility
+
+Colour-blind palette (C), reduced motion, reduced flashing, **screen shake off**, **sound captions** (alarms, horn, thunder, chatter), text and panel size up to 200%, game speed 70–100%, hold or toggle grinding, key rebinding and a left-handed preset.
 
 ## Tech Stack
 
@@ -169,6 +206,10 @@ No external model files, textures, or audio files. Everything is generated at ru
 ## Screenshot check
 
 `npm run visual` starts the dev server, renders four fixed scenes in headless Chromium and compares them with `visual/baseline/` (it fails if a scene changed a lot or the page threw an error). `npm run visual -- --update` accepts the current look. It needs a Chromium build Playwright can use: run `npx playwright-core install chromium-headless-shell` once, or set `CHROME_PATH`.
+
+## Play-test bot
+
+`npm run playtest` plays whole jobs headlessly with a bot (it aims at the worst hump, manages heat, reverses for more passes, changes stones, stops for broken rails, slows for crews and sprays fires) and reports time per job and section, passes, stars, pay, the noisiest moments and dead time (`playtest/report.json`). Options: `--jobs 0,2`, `--first`, `--skill 0.6`, `--speed 4`, `--limit 900`. It found the soft-locks and balance problems fixed in round 3.
 
 ## Saving
 

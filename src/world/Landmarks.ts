@@ -148,6 +148,11 @@ export class Landmarks {
     cowWhite: new THREE.MeshStandardMaterial({ color: 0xe8e0d4, roughness: 0.9 }),
     palmTrunk: new THREE.MeshStandardMaterial({ color: 0x8a7050, roughness: 0.95 }),
     palmLeaf: new THREE.MeshStandardMaterial({ color: 0x3a7a30, roughness: 0.8, side: THREE.DoubleSide, flatShading: true }),
+    redRock: new THREE.MeshStandardMaterial({ color: 0xa8583a, roughness: 1, flatShading: true }),
+    cactus: new THREE.MeshStandardMaterial({ color: 0x4f7a3a, roughness: 0.9 }),
+    coal: new THREE.MeshStandardMaterial({ color: 0x1c1c1e, roughness: 0.95, flatShading: true }),
+    fir: new THREE.MeshStandardMaterial({ color: 0x24452c, roughness: 0.9, flatShading: true }),
+    log: new THREE.MeshStandardMaterial({ color: 0x8a6440, roughness: 0.95 }),
     // Glowing parts — their brightness follows the time of day (see update)
     lampRed: new THREE.MeshStandardMaterial({ color: 0x400808, emissive: 0xff1a0a, emissiveIntensity: 0 }),
     lampWarm: new THREE.MeshStandardMaterial({ color: 0xfff0c0, emissive: 0xffd080, emissiveIntensity: 0 }),
@@ -166,6 +171,9 @@ export class Landmarks {
       // The sea is on the left, so this road only runs inland (a beach access road
       // ending at a little car park on the sand)
       coast: [{ t: 0.4, near: 12, far: 110 }],
+      desert: [{ t: 0.3, near: 110, far: 110 }],
+      forest: [{ t: 0.55, near: 80, far: 80 }],
+      appalachia: [{ t: 0.28, near: 90, far: 90 }, { t: 0.82, near: 90, far: 90 }],
     };
     this.layOutRoads(roads[region]);
     switch (region) {
@@ -173,6 +181,9 @@ export class Landmarks {
       case 'mountain': this.buildMountain(); break;
       case 'city': this.buildCity(); break;
       case 'coast': this.buildCoast(); break;
+      case 'desert': this.buildDesert(); break;
+      case 'forest': this.buildForest(); break;
+      case 'appalachia': this.buildAppalachia(); break;
     }
     this.buildCrossings();
     this.bake();
@@ -350,6 +361,108 @@ export class Landmarks {
       this.group.add(cow);
     }
     this.block(field, 20);
+  }
+
+  /** Desert: a red mesa, saguaro cacti and a railroad water tank */
+  private buildDesert(): void {
+    const m = this.mat;
+    // Mesa: stacked, narrowing slabs of red rock
+    const mesa = this.placeAt(0.5, 70);
+    this.box(mesa, 60, 14, 34, m.redRock, 0, 7, 0);
+    this.box(mesa, 46, 8, 26, m.redRock, 2, 18, -2);
+    this.box(mesa, 30, 4, 16, m.redRock, -3, 24, 1);
+    this.bakeGroup(mesa);
+    this.block(mesa, 40);
+    // Butte further along on the other side
+    const butte = this.placeAt(0.78, -60);
+    this.box(butte, 16, 22, 14, m.redRock, 0, 11, 0);
+    this.box(butte, 10, 6, 9, m.redRock, 1, 25, 0);
+    this.bakeGroup(butte);
+    this.block(butte, 14);
+    // Water tank on stilts beside the line
+    const tank = this.placeAt(0.22, 12);
+    for (const [x, z] of [[-1.6, -1.6], [1.6, -1.6], [-1.6, 1.6], [1.6, 1.6]]) this.box(tank, 0.25, 7, 0.25, m.darkWood, x, 3.5, z);
+    this.cyl(tank, 2.6, 2.6, 3.5, m.wood, 0, 8.6, 0, 14);
+    this.cyl(tank, 0.2, 2.8, 1.2, m.roof, 0, 11, 0, 14);
+    this.box(tank, 0.3, 0.3, 3, m.darkMetal, -2.4, 8, 0); // spout
+    this.bakeGroup(tank);
+    this.block(tank, 5);
+    // Saguaros scattered on both sides
+    for (let i = 0; i < 26; i++) {
+      const c = this.placeClear(() => [Math.random(), (Math.random() < 0.5 ? -1 : 1) * (9 + Math.random() * 45)], 3);
+      if (!c) continue;
+      const h = 3 + Math.random() * 3;
+      this.cyl(c, 0.32, 0.38, h, m.cactus, 0, h / 2, 0, 8);
+      for (const side of [-1, 1]) {
+        if (Math.random() < 0.3) continue;
+        const ay = h * (0.4 + Math.random() * 0.25);
+        this.cyl(c, 0.22, 0.22, 0.9, m.cactus, side * 0.6, ay, 0, 6).rotation.z = Math.PI / 2;
+        this.cyl(c, 0.22, 0.24, 1.4 + Math.random(), m.cactus, side * 1.0, ay + 0.8, 0, 6);
+      }
+      this.bakeGroup(c);
+      this.block(c, 2);
+    }
+  }
+
+  /** Pacific Northwest: a sawmill with log decks and a burner, among tall firs */
+  private buildForest(): void {
+    const m = this.mat;
+    const mill = this.placeAt(0.35, 26);
+    this.box(mill, 14, 7, 30, m.galvanized, 0, 3.5, 0);
+    this.box(mill, 14.4, 0.5, 30.4, m.roof, 0, 7.2, 0);
+    // tepee burner
+    this.cyl(mill, 1.2, 5, 12, m.darkMetal, 14, 6, 10, 14);
+    // log decks
+    for (let r = 0; r < 3; r++) for (let i = 0; i < 6 - r; i++) {
+      const log = this.cyl(mill, 0.45, 0.45, 9, m.log, -12, 0.45 + r * 0.8, -8 + i * 0.95 + r * 0.45, 8);
+      log.rotation.x = Math.PI / 2;
+    }
+    this.bakeGroup(mill);
+    this.block(mill, 26);
+    // Very tall firs in clumps
+    for (let i = 0; i < 40; i++) {
+      const t = this.placeClear(() => [Math.random(), (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 40)], 3);
+      if (!t) continue;
+      const h = 12 + Math.random() * 10;
+      this.cyl(t, 0.3, 0.45, h * 0.3, m.darkWood, 0, h * 0.15, 0, 6);
+      this.cyl(t, 0, 2.6, h * 0.8, m.fir, 0, h * 0.55, 0, 7);
+      this.bakeGroup(t);
+      this.block(t, 3);
+    }
+  }
+
+  /** Appalachia: a coal tipple loading hoppers, a white church steeple, coal piles */
+  private buildAppalachia(): void {
+    const m = this.mat;
+    const tipple = this.placeAt(0.45, 18);
+    for (const [x, z] of [[-4, -6], [4, -6], [-4, 6], [4, 6]]) this.box(tipple, 0.6, 16, 0.6, m.darkMetal, x, 8, z);
+    this.box(tipple, 10, 6, 14, m.galvanized, 0, 18, 0);       // the head house
+    this.box(tipple, 10.4, 0.4, 14.4, m.roof, 0, 21.2, 0);
+    this.box(tipple, 2, 2, 24, m.darkMetal, -10, 12, 0).rotation.z = 0.5; // conveyor
+    this.box(tipple, 4, 3, 4, m.darkMetal, 0, 13.5, 0);          // chute
+    // coal piles
+    this.cyl(tipple, 0, 9, 7, m.coal, -22, 3.5, -6, 9);
+    this.cyl(tipple, 0, 6, 5, m.coal, -20, 2.5, 10, 9);
+    this.bakeGroup(tipple);
+    this.block(tipple, 26);
+    // Hopper cars waiting on a spur (on the left, away from the freight track)
+    const spur = this.placeAt(0.6, -12);
+    for (let i = 0; i < 6; i++) {
+      this.box(spur, 3, 2.6, 13, m.coal, 0, 1.9, -36 + i * 14);
+      this.box(spur, 3.1, 0.3, 13.2, m.darkMetal, 0, 3.3, -36 + i * 14);
+      this.box(spur, 2.6, 0.5, 12, m.darkMetal, 0, 0.45, -36 + i * 14);
+    }
+    this.bakeGroup(spur);
+    this.block(spur, 46);
+    // Little white church with a steeple on a rise
+    const church = this.placeAt(0.2, -36);
+    this.box(church, 7, 5, 11, m.white, 0, 2.5, 0);
+    const roofL = this.box(church, 4.6, 0.4, 11.4, m.roof, -1.9, 6.1, 0); roofL.rotation.z = 0.7;
+    const roofR = this.box(church, 4.6, 0.4, 11.4, m.roof, 1.9, 6.1, 0); roofR.rotation.z = -0.7;
+    this.box(church, 2.4, 7, 2.4, m.white, 0, 6, 6);
+    this.cyl(church, 0, 1.6, 4, m.roof, 0, 11.5, 6, 4);
+    this.bakeGroup(church);
+    this.block(church, 9);
   }
 
   /** A simple cow: body, legs, and a head that slowly bobs while grazing */
@@ -747,6 +860,9 @@ export class Landmarks {
     }
   }
   private movingMaterial = createVertexPbrMaterial();
+
+  /** Track distances of the level crossings */
+  get crossingDistances(): number[] { return this.crossings.map((c) => c.dist); }
 
   /** True if trees/rocks shouldn't be placed at (x, z): roads and landmarks */
   blocks(x: number, z: number): boolean {

@@ -66,17 +66,22 @@ export class RadioDispatch {
     this.shuffleMessages();
   }
 
-  update(dt: number): void {
+  /**
+   * @param busy - something more important is on screen (a card, a banner):
+   *               background chatter waits
+   */
+  update(dt: number, busy = false): void {
     this.timer += dt;
 
-    if (!this.visible && this.timer >= this.nextIn) {
+    if (!this.visible && this.timer >= this.nextIn && !busy) {
       this.showNext();
     }
 
     if (this.visible && this.timer > 6) {
       this.container.style.opacity = '0';
       this.visible = false;
-      this.nextIn = 15 + Math.random() * 25;
+      // Background chatter now and then (the play-test found it added to the noise)
+      this.nextIn = 35 + Math.random() * 35;
       this.timer = 0;
     }
   }

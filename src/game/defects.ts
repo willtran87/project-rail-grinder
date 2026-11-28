@@ -56,6 +56,12 @@ const REGION_WEIGHTS: Record<Region, Record<DefectKind, number>> = {
   city:     { wear: 25, corrugation: 40, flatCrown: 15, headCheck: 15, gaugeFace: 5 },
   // A bit of everything
   coast:    { wear: 30, corrugation: 15, flatCrown: 15, headCheck: 20, gaugeFace: 20 },
+  // Heat and blown sand: worn, flattened crowns
+  desert:   { wear: 30, corrugation: 10, flatCrown: 30, headCheck: 15, gaugeFace: 15 },
+  // Curves through the trees and wet rail
+  forest:   { wear: 25, corrugation: 15, flatCrown: 10, headCheck: 25, gaugeFace: 25 },
+  // Loaded coal trains on curves: corrugation and gauge-side damage
+  appalachia: { wear: 20, corrugation: 30, flatCrown: 10, headCheck: 20, gaugeFace: 20 },
 };
 
 /** Small, fast, seeded random number generator (mulberry32): same seed → same numbers */

@@ -129,6 +129,16 @@ describe('RailProfile.findWorstZones', () => {
     expect(xs[1]).toBeLessThanOrEqual(14);
   });
 
+  it('lists a small remaining hump ahead of deeper over-ground dips (regression)', () => {
+    const profile = new RailProfile();
+    const target = makeTarget();
+    for (const x of [-24, -8, 8]) profile.removeMetalAt(x, 6, TOL * 4); // three deep dips
+    addDefect(profile, 22, 26, TOL * 1.6);                              // one small hump
+    const zones = profile.findWorstZones(target, 3);
+    expect(zones[0].severity).toBeGreaterThan(0);
+    expect(zones[0].centerX).toBeGreaterThan(20);
+  });
+
   it('ignores deviations within tolerance', () => {
     const profile = new RailProfile();
     addDefect(profile, -6, 6, TOL * 0.9);

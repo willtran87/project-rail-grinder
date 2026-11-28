@@ -52,9 +52,27 @@ export function heatPenalty(heat: number): number {
   return heat > 80 ? 0.5 : heat > 60 ? 1.25 : 1.0;
 }
 
-/** Metal removed per second at the stone centre (mm): ~0.03 at 50%, ~0.05 at 100% */
+/**
+ * Stone life lost per mm of metal removed (each rail). At 50% pressure a set
+ * lasts ~2.5 minutes of grinding: one or two changes on a full job. (The
+ * play-test found 55 here wore a set out in ~35 s.)
+ */
+export const STONE_WEAR = 7.5;
+
+/**
+ * Below this pressure a stone is lifted clear of its rail: it doesn't cut.
+ * Lets you finish one rail while the other still needs work (the play-test
+ * found a finished rail was always over-ground while the other was worked).
+ */
+export const STONE_LIFT_PRESSURE = 5;
+
+/**
+ * Metal removed per second at the stone centre (mm): 0.04 at 50%, 0.065 at
+ * 100%, none when lifted. (Raised ~25% after the play-test: jobs ran long.)
+ */
 export function removalRatePerSec(pressure: number): number {
-  return 0.012 + pressure * 0.0004;
+  if (pressure < STONE_LIFT_PRESSURE) return 0;
+  return 0.015 + pressure * 0.0005;
 }
 
 // ---------------------------------------------------------------------------

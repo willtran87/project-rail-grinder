@@ -53,3 +53,58 @@ export function markStorySeen(id: string): void {
   const seen = loadJSON<string[]>(KEY, []);
   if (!seen.includes(id)) saveJSON(KEY, [...seen, id]);
 }
+
+// ---------------------------------------------------------------------------
+// Crew stories: each hired crew member has a short arc, a line at the start
+// of their 1st, 4th and 8th job with you.
+// ---------------------------------------------------------------------------
+
+export const CREW_STORIES: Record<string, string[]> = {
+  firewatch: [
+    'Dee here, fire watch. I grew up on a ranch that burned. Hot stones, dry grass: I\'ll be watching.',
+    'Spotted a grass fire start behind you last week before it was the size of a hat. That\'s the job.',
+    'Got my wildland qualification renewed. Still say the best fire is the one that never starts.',
+  ],
+  welder: [
+    'Sam Okafor, welder. Find me a broken rail and I\'ll have it whole before your coffee\'s cold.',
+    'Thermite weld is half chemistry, half patience. You\'re learning the patience part, 42.',
+    'Teaching my daughter to weld this summer. Told her about you — the operator who never over-grinds. Mostly.',
+  ],
+  mechanic: [
+    'Ray Kowalski. I keep the stones turning. Change them before they glaze and we\'ll get along.',
+    'Rebuilt the number three motor last night. Hum on it now is like a cat. Listen for it.',
+    'Thirty-one years on these machines. You\'re the first operator who asks how they work. Means a lot.',
+  ],
+  spotter: [
+    'June Park, spotter. When dispatch calls an emergency, I\'ll get you the location first.',
+    'Walked the whole division on foot once. Every curve has a story. Most of them are about rails.',
+    'Dispatch wants me in the office. Told them I\'d rather be out here with Grinder 42.',
+  ],
+};
+const CREW_JOBS_KEY = 'crew-jobs-v1';
+/** Jobs done with each crew member */
+export function loadCrewJobs(): Record<string, number> { return loadJSON<Record<string, number>>(CREW_JOBS_KEY, {}); }
+export function addCrewJob(ids: string[]): void {
+  const all = loadCrewJobs();
+  for (const id of ids) all[id] = (all[id] ?? 0) + 1;
+  saveJSON(CREW_JOBS_KEY, all);
+}
+/** A crew member's line for this job, if it's one of their story jobs (1st, 4th, 8th) */
+export function crewBeat(ids: string[]): StoryLine | null {
+  const jobs = loadCrewJobs();
+  for (const id of ids) {
+    const n = jobs[id] ?? 0;
+    const i = [0, 3, 7].indexOf(n);
+    if (i >= 0 && CREW_STORIES[id]) return { from: `CREW · ${id.toUpperCase()}`, text: CREW_STORIES[id][i] };
+  }
+  return null;
+}
+
+/** Marge remembers your career now and then */
+export function margeRemark(s: { jobs: number; bestCombo: number; perfects: number; sGrades: number }): string | null {
+  if (s.jobs > 0 && s.jobs % 10 === 0) return `That's contract number ${s.jobs} for Grinder 42. The division has noticed.`;
+  if (s.bestCombo >= 8 && s.jobs % 7 === 3) return `Still talking about that ${s.bestCombo}-section streak of yours in the office.`;
+  if (s.perfects >= 25 && s.jobs % 9 === 5) return `${s.perfects} perfect passes. The inspectors have stopped checking your sections.`;
+  if (s.sGrades >= 1 && s.jobs % 11 === 6) return `An S grade on the board with your name on it. Do it again, would you?`;
+  return null;
+}
